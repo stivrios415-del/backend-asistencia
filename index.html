@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>Restablecer contraseña - Instituto Bethel</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #F4F3ED;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        .container {
+            background-color: white;
+            max-width: 450px;
+            width: 100%;
+            padding: 2rem 1.8rem;
+            border-radius: 32px;
+            box-shadow: 0 20px 35px -12px rgba(0, 0, 0, 0.15);
+            text-align: center;
+            transition: all 0.2s ease;
+        }
+
+        h2 {
+            color: #143C65;
+            font-size: 1.8rem;
+            margin-bottom: 0.5rem;
+            font-weight: 700;
+        }
+
+        .sub {
+            color: #4A5568;
+            margin-bottom: 1.8rem;
+            font-size: 0.95rem;
+        }
+
+        input {
+            width: 100%;
+            padding: 14px 16px;
+            margin: 12px 0;
+            border: 1.5px solid #E2E8F0;
+            border-radius: 16px;
+            font-size: 1rem;
+            background-color: #FCFCFA;
+            transition: 0.2s;
+            font-family: inherit;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #256D5B;
+            box-shadow: 0 0 0 3px rgba(37, 109, 91, 0.2);
+        }
+
+        button {
+            background-color: #256D5B;
+            color: white;
+            padding: 14px;
+            border: none;
+            border-radius: 40px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 16px;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background-color: #1e5546;
+        }
+
+        button:disabled {
+            background-color: #a0aec0;
+            cursor: not-allowed;
+        }
+
+        .message {
+            margin-top: 20px;
+            font-size: 0.85rem;
+            padding: 10px;
+            border-radius: 30px;
+            background-color: #FEE2E2;
+            color: #B91C1C;
+        }
+
+        .success {
+            background-color: #E6F7EC;
+            color: #1E7B48;
+        }
+
+        .loader {
+            display: inline-block;
+            width: 18px;
+            height: 18px;
+            border: 2px solid #ffffff;
+            border-radius: 50%;
+            border-top-color: transparent;
+            animation: spin 0.6s linear infinite;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .footer-note {
+            margin-top: 25px;
+            font-size: 0.75rem;
+            color: #718096;
+        }
+
+        @media (max-width: 480px) {
+            .container {
+                padding: 1.5rem;
+            }
+            h2 {
+                font-size: 1.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h2>🔐 Restablecer contraseña</h2>
+    <p class="sub">Ingresa tu nueva contraseña para continuar</p>
+
+    <input type="password" id="newPassword" placeholder="Nueva contraseña" autocomplete="new-password">
+    <input type="password" id="confirmPassword" placeholder="Confirmar contraseña" autocomplete="new-password">
+
+    <button id="resetBtn">Cambiar contraseña</button>
+    <div id="message" class="message"></div>
+    <div class="footer-note">Instituto Bethel · Portal de acceso</div>
+</div>
+
+<script>
+    // ============================================================
+    // Configuración de Supabase (URL y ANON KEY de tu proyecto)
+    // ============================================================
+    const SUPABASE_URL = 'https://owfqbcmpznbuifzhstoe.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im93ZnFiY21wem5idWlmemhzdG9lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU2Nzg3NjYsImV4cCI6MjA5MTI1NDc2Nn0.L_ltSbYU3jfk5d_fBHG8TbSZFlGzW0BlEW0UNKinBmo';
+
+    // =================== UTILIDADES =============================
+    function showMessage(text, isError = true) {
+        const msgDiv = document.getElementById('message');
+        msgDiv.textContent = text;
+        msgDiv.className = 'message';
+        if (!isError) msgDiv.classList.add('success');
+    }
+
+    function setLoading(loading) {
+        const btn = document.getElementById('resetBtn');
+        if (loading) {
+            btn.disabled = true;
+            btn.innerHTML = '<span class="loader"></span> Procesando...';
+        } else {
+            btn.disabled = false;
+            btn.innerHTML = 'Cambiar contraseña';
+        }
+    }
+
+    // =================== OBTENER TOKEN =========================
+    // Supabase envía el token en el fragmento: #access_token=xxx&type=recovery
+    const hash = window.location.hash.substring(1);
+    const params = new URLSearchParams(hash);
+    let accessToken = params.get('access_token');
+    const type = params.get('type');
+
+    // Fallback: si viene como query string (menos común)
+    if (!accessToken) {
+        const urlParams = new URLSearchParams(window.location.search);
+        accessToken = urlParams.get('access_token');
+    }
+
+    const finalToken = accessToken;
+
+    // =================== VALIDACIÓN INICIAL ====================
+    if (!finalToken) {
+        showMessage('❌ Enlace inválido o expirado. Solicita un nuevo restablecimiento desde la aplicación.', true);
+        document.getElementById('resetBtn').disabled = true;
+    } else if (type !== 'recovery') {
+        showMessage('⚠️ Este enlace no es para restablecer contraseña. Verifica e intenta de nuevo.', true);
+        document.getElementById('resetBtn').disabled = true;
+    }
+
+    // =================== EVENTO DEL BOTÓN ======================
+    document.getElementById('resetBtn').addEventListener('click', async () => {
+        const newPassword = document.getElementById('newPassword').value.trim();
+        const confirmPassword = document.getElementById('confirmPassword').value.trim();
+        const messageDiv = document.getElementById('message');
+
+        // Validaciones locales
+        if (!newPassword || !confirmPassword) {
+            showMessage('Ambos campos son obligatorios.', true);
+            return;
+        }
+        if (newPassword !== confirmPassword) {
+            showMessage('Las contraseñas no coinciden.', true);
+            return;
+        }
+        if (newPassword.length < 6) {
+            showMessage('La contraseña debe tener al menos 6 caracteres.', true);
+            return;
+        }
+
+        setLoading(true);
+        try {
+            const response = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'apikey': SUPABASE_ANON_KEY,
+                    'Authorization': `Bearer ${finalToken}`
+                },
+                body: JSON.stringify({ password: newPassword })
+            });
+
+            if (response.ok) {
+                showMessage('✅ ¡Contraseña actualizada correctamente! Ya puedes iniciar sesión en la app.', false);
+                document.getElementById('resetBtn').disabled = true;
+                // Opcional: redirigir después de 3 segundos
+                setTimeout(() => {
+                    window.location.href = 'https://backend-asistencia-nhny.onrender.com/';  // o a la página que quieras
+                }, 3000);
+            } else {
+                const errorData = await response.json();
+                let errorMsg = errorData?.msg || errorData?.message || 'No se pudo cambiar la contraseña.';
+                if (response.status === 401) errorMsg = 'El enlace ha expirado o ya fue utilizado. Solicita un nuevo restablecimiento.';
+                showMessage(`❌ Error: ${errorMsg}`, true);
+            }
+        } catch (err) {
+            console.error('Error de red:', err);
+            showMessage('⚠️ Error de conexión. Verifica tu internet e intenta de nuevo.', true);
+        } finally {
+            setLoading(false);
+        }
+    });
+</script>
+</body>
+</html>
