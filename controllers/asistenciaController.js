@@ -16,7 +16,6 @@ const registrarAsistencia = async (req, res) => {
   
   console.log(`🔍 Buscando estudiante con cédula: ${cedula}`);
   
-  // ✅ Incluimos carrera y foto_url
   const { data: estudiante, error: errEstudiante } = await supabase
     .from('estudiantes')
     .select('cedula, nombre, apellido, grado, seccion, carrera, foto_url')
@@ -207,7 +206,7 @@ const getReporteAsistencia = async (req, res) => {
   res.json(data);
 };
 
-// Exportar a Excel (solo estudiantes con asistencia, rango de fechas) – sin cambios
+// Exportar a Excel (solo estudiantes con asistencia, rango de fechas)
 const exportarReporteExcel = async (req, res) => {
   const { fechaInicio, fechaFin, usuario } = req.query;
   console.log(`📊 Exportando Excel - Desde: ${fechaInicio}, Hasta: ${fechaFin}, Usuario: ${usuario || 'anon'}`);
@@ -278,7 +277,6 @@ const exportarReporteExcel = async (req, res) => {
   
   res.json({ success: true, url: archivo_url });
 };
-
 
 // Exportar reporte completo (todos los estudiantes, Presente/Ausente) con tablas separadas por grado/sección
 const exportarReporteCompletoExcel = async (req, res) => {
@@ -414,6 +412,18 @@ const exportarReporteCompletoExcel = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+// ========== FUNCIÓN FALTANTE ==========
+// Listar reportes generados (para historial, opcional)
+const getReportesGenerados = async (req, res) => {
+  const { data, error } = await supabase
+    .from('reportes_generados')
+    .select('*')
+    .order('fecha_generacion', { ascending: false });
+  if (error) return res.status(400).json({ error: error.message });
+  res.json(data);
+};
+
 module.exports = {
   registrarAsistencia,
   getAsistenciaHoy,
@@ -423,5 +433,5 @@ module.exports = {
   getReporteAsistencia,
   exportarReporteExcel,
   exportarReporteCompletoExcel,
-  getReportesGenerados
+  getReportesGenerados   // Ahora sí definida
 };
