@@ -1,6 +1,16 @@
 const supabase = require('../config/supabase');
 const ExcelJS = require('exceljs');
 
+// 🔧 Función auxiliar para formatear fecha con día de la semana (ej: "Miércoles, 28 de abril de 2026")
+function formatearFechaConDia(fechaISO) {
+  const fecha = new Date(fechaISO);
+  const opciones = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+  let fechaFormateada = fecha.toLocaleDateString('es-ES', opciones);
+  // Capitalizar primera letra del día
+  fechaFormateada = fechaFormateada.charAt(0).toUpperCase() + fechaFormateada.slice(1);
+  return fechaFormateada;
+}
+
 // Registrar asistencia (por cédula escaneada)
 const registrarAsistencia = async (req, res) => {
   console.log('📥 POST /api/asistencia - Body:', req.body);
@@ -206,7 +216,7 @@ const getReporteAsistencia = async (req, res) => {
   res.json(data);
 };
 
-// Exportar a Excel (solo estudiantes con asistencia, rango de fechas)
+// Exportar a Excel (solo estudiantes con asistencia, rango de fechas) – sin cambios
 const exportarReporteExcel = async (req, res) => {
   const { fechaInicio, fechaFin, usuario } = req.query;
   console.log(`📊 Exportando Excel - Desde: ${fechaInicio}, Hasta: ${fechaFin}, Usuario: ${usuario || 'anon'}`);
@@ -278,7 +288,7 @@ const exportarReporteExcel = async (req, res) => {
   res.json({ success: true, url: archivo_url });
 };
 
-// Exportar reporte completo (todos los estudiantes, Presente/Ausente) con tablas separadas por grado/sección
+// 🔹 Exportar reporte completo (todos los estudiantes, Presente/Ausente) con tablas separadas por grado/sección Y MOSTRANDO LA FECHA
 const exportarReporteCompletoExcel = async (req, res) => {
   const { fecha, usuario, grado, seccion } = req.query;
   if (!fecha) {
@@ -329,8 +339,21 @@ const exportarReporteCompletoExcel = async (req, res) => {
     
     // Estilos
     const headerStyle = { font: { bold: true }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF8FF' } } };
+    const dateStyle = { font: { bold: true, size: 12 }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9EAF7' } } };
     
     let currentRow = 1;
+    
+    // 🔹 Mostrar la fecha con día de la semana
+    const fechaConDia = formatearFechaConDia(fecha);
+    const dateRow = worksheet.addRow([`Fecha: ${fechaConDia}`]);
+    worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
+    dateRow.font = { bold: true, size: 12 };
+    dateRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE6F0FA' } };
+    currentRow++;
+    
+    // Fila en blanco opcional
+    worksheet.addRow([]);
+    currentRow++;
     
     // Recorrer cada grupo ordenado por grado y sección
     const gruposOrdenados = Array.from(grupos.values()).sort((a, b) => {
@@ -433,5 +456,5 @@ module.exports = {
   getReporteAsistencia,
   exportarReporteExcel,
   exportarReporteCompletoExcel,
-  getReportesGenerados   // Ahora sí definida
+  getReportesGenerados
 };
