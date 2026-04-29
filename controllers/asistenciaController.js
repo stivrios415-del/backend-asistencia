@@ -94,7 +94,7 @@ const getAsistenciaHoy = async (req, res) => {
       id,
       fecha,
       hora,
-      estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
+      estudantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
     `)
     .eq('fecha', hoy);
   if (error) {
@@ -102,7 +102,7 @@ const getAsistenciaHoy = async (req, res) => {
     return res.status(400).json({ error: error.message });
   }
   const asistenciaConFaltas = await Promise.all(data.map(async (item) => {
-    const cedula = item.estudiantes?.cedula;
+    const cedula = item.estudantes?.cedula;
     let faltas = 0;
     if (cedula) {
       faltas = await contarFaltasEnMes(cedula, añoActual, mesActual);
@@ -111,7 +111,7 @@ const getAsistenciaHoy = async (req, res) => {
       id: item.id,
       fecha: item.fecha,
       hora: item.hora,
-      estudiante: item.estudiantes,
+      estudiante: item.estudantes,
       faltasEnMes: faltas
     };
   }));
@@ -129,7 +129,7 @@ const getAsistenciaByFecha = async (req, res) => {
       id,
       fecha,
       hora,
-      estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
+      estudantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
     `)
     .eq('fecha', fecha);
   if (error) {
@@ -150,7 +150,7 @@ const getAsistenciaPorGrado = async (req, res) => {
       id,
       fecha,
       hora,
-      estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
+      estudantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
     `)
     .eq('fecha', fechaFiltro);
   if (error) {
@@ -158,8 +158,8 @@ const getAsistenciaPorGrado = async (req, res) => {
     return res.status(400).json({ error: error.message });
   }
   let filtrados = data;
-  if (grado) filtrados = filtrados.filter(a => a.estudiantes?.grado === grado);
-  if (seccion) filtrados = filtrados.filter(a => a.estudiantes?.seccion === seccion);
+  if (grado) filtrados = filtrados.filter(a => a.estudantes?.grado === grado);
+  if (seccion) filtrados = filtrados.filter(a => a.estudantes?.seccion === seccion);
   console.log(`✅ Filtrados: ${filtrados.length} registros`);
   res.json(filtrados);
 };
@@ -190,7 +190,7 @@ const getReporteAsistencia = async (req, res) => {
       id,
       fecha,
       hora,
-      estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
+      estudantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
     `);
   if (fechaInicio && fechaFin) {
     query = query.gte('fecha', fechaInicio).lte('fecha', fechaFin);
@@ -220,7 +220,7 @@ const exportarReporteExcel = async (req, res) => {
       id,
       fecha,
       hora,
-      estudiantes (cedula, nombre, apellido, grado, seccion)
+      estudantes (cedula, nombre, apellido, grado, seccion)
     `);
   query = query.gte('fecha', fechaInicio).lte('fecha', fechaFin);
   const { data, error } = await query.order('fecha', { ascending: false });
@@ -243,11 +243,11 @@ const exportarReporteExcel = async (req, res) => {
     worksheet.addRow({
       fecha: item.fecha,
       hora: item.hora,
-      cedula: item.estudiantes?.cedula || '',
-      nombre: item.estudiantes?.nombre || '',
-      apellido: item.estudiantes?.apellido || '',
-      grado: item.estudiantes?.grado || '',
-      seccion: item.estudiantes?.seccion || '',
+      cedula: item.estudantes?.cedula || '',
+      nombre: item.estudantes?.nombre || '',
+      apellido: item.estudantes?.apellido || '',
+      grado: item.estudantes?.grado || '',
+      seccion: item.estudantes?.seccion || '',
     });
   });
   const buffer = await workbook.xlsx.writeBuffer();
@@ -394,10 +394,10 @@ const getReportesGenerados = async (req, res) => {
   res.json(data);
 };
 
-// ========== ESTADÍSTICAS DE ASISTENCIA (JSON) CON RESUMEN POR GRADO Y CARRERA ==========
+// ========== ESTADÍSTICAS DE ASISTENCIA (JSON) CON FILTRO POR PROFESOR ==========
 const getEstadisticas = async (req, res) => {
   try {
-    const { fechaInicio, fechaFin } = req.query;
+    const { fechaInicio, fechaFin, profesorEmail } = req.query;
     let inicio, fin;
     if (fechaInicio && fechaFin) {
       inicio = fechaInicio;
@@ -408,11 +408,40 @@ const getEstadisticas = async (req, res) => {
       fin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).toISOString().split('T')[0];
     }
 
-    const { data: estudiantes, error: errEst } = await supabase
+    // Obtener las combinaciones (grado, carrera) que imparte el profesor
+    let filtrosGradoCarrera = [];
+    if (profesorEmail) {
+      const { data: profesor, error: errProf } = await supabase
+        .from('profesores')
+        .select('id')
+        .eq('email', profesorEmail)
+        .single();
+      if (!errProf && profesor) {
+        const { data: asignaciones, error: errAsig } = await supabase
+          .from('profesor_asignaciones')
+          .select('grado, carrera')
+          .eq('profesor_id', profesor.id);
+        if (!errAsig && asignaciones) {
+          filtrosGradoCarrera = asignaciones;
+        }
+      }
+    }
+
+    // Construir consulta de estudiantes con filtro de asignaciones
+    let queryEstudiantes = supabase
       .from('estudiantes')
-      .select('cedula, nombre, apellido, grado, seccion, carrera');
+      .select('cedula, nombre, apellido, grado, seccion, carrera')
+      .order('apellido', { ascending: true });
+
+    if (filtrosGradoCarrera.length > 0) {
+      const orConditions = filtrosGradoCarrera.map(f => `and(grado.eq.${f.grado},carrera.eq.${f.carrera})`).join(',');
+      queryEstudiantes = queryEstudiantes.or(orConditions);
+    }
+
+    const { data: estudiantes, error: errEst } = await queryEstudiantes;
     if (errEst) throw errEst;
 
+    // Obtener asistencias en el rango
     const { data: asistencias, error: errAsis } = await supabase
       .from('asistencia')
       .select('cedula, fecha')
@@ -448,7 +477,7 @@ const getEstadisticas = async (req, res) => {
     const masFaltas = [...estadisticas].sort((a, b) => b.faltas - a.faltas).slice(0, 10);
     const mejorRecord = [...estadisticas].sort((a, b) => b.asistencias - a.asistencias).slice(0, 10);
 
-    // Resumen por grado y carrera (para gráfica de pastel)
+    // Resumen por grado y carrera (solo asignaciones)
     const resumenGradoCarrera = {};
     estadisticas.forEach(est => {
       const key = `${est.grado}|${est.carrera}`;
@@ -481,10 +510,10 @@ const getEstadisticas = async (req, res) => {
   }
 };
 
-// ========== EXPORTAR ESTADÍSTICAS A EXCEL (CON RESUMEN POR GRADO Y CARRERA) ==========
+// ========== EXPORTAR ESTADÍSTICAS A EXCEL (CON FILTRO POR PROFESOR) ==========
 const exportarEstadisticasExcel = async (req, res) => {
   try {
-    const { fechaInicio, fechaFin } = req.query;
+    const { fechaInicio, fechaFin, profesorEmail } = req.query;
     let inicio, fin;
     if (fechaInicio && fechaFin) {
       inicio = fechaInicio;
@@ -495,13 +524,40 @@ const exportarEstadisticasExcel = async (req, res) => {
       fin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).toISOString().split('T')[0];
     }
 
-    // Obtener estudiantes con carrera
-    const { data: estudiantes, error: errEst } = await supabase
+    // Obtener asignaciones del profesor
+    let filtrosGradoCarrera = [];
+    if (profesorEmail) {
+      const { data: profesor, error: errProf } = await supabase
+        .from('profesores')
+        .select('id')
+        .eq('email', profesorEmail)
+        .single();
+      if (!errProf && profesor) {
+        const { data: asignaciones, error: errAsig } = await supabase
+          .from('profesor_asignaciones')
+          .select('grado, carrera')
+          .eq('profesor_id', profesor.id);
+        if (!errAsig && asignaciones) {
+          filtrosGradoCarrera = asignaciones;
+        }
+      }
+    }
+
+    // Consultar estudiantes con filtro
+    let queryEstudiantes = supabase
       .from('estudiantes')
-      .select('cedula, nombre, apellido, grado, seccion, carrera');
+      .select('cedula, nombre, apellido, grado, seccion, carrera')
+      .order('apellido', { ascending: true });
+
+    if (filtrosGradoCarrera.length > 0) {
+      const orConditions = filtrosGradoCarrera.map(f => `and(grado.eq.${f.grado},carrera.eq.${f.carrera})`).join(',');
+      queryEstudiantes = queryEstudiantes.or(orConditions);
+    }
+
+    const { data: estudiantes, error: errEst } = await queryEstudiantes;
     if (errEst) throw errEst;
 
-    // Obtener asistencias en el rango
+    // Asistencias en el rango
     const { data: asistencias, error: errAsis } = await supabase
       .from('asistencia')
       .select('cedula, fecha')
@@ -518,7 +574,6 @@ const exportarEstadisticasExcel = async (req, res) => {
     const endDate = new Date(fin);
     const totalDias = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
 
-    // Estadísticas por estudiante
     const estadisticas = estudiantes.map(est => {
       const asistencias = asistenciaCount[est.cedula] || 0;
       const faltas = totalDias - asistencias;
@@ -535,11 +590,10 @@ const exportarEstadisticasExcel = async (req, res) => {
       };
     });
 
-    // Top 10 más faltas y mejor récord
     const masFaltas = [...estadisticas].sort((a, b) => b.faltas - a.faltas).slice(0, 10);
     const mejorRecord = [...estadisticas].sort((a, b) => b.asistencias - a.asistencias).slice(0, 10);
 
-    // Resumen por grado y carrera (mismos datos que la gráfica)
+    // Resumen por grado y carrera
     const resumenGradoCarrera = {};
     estadisticas.forEach(est => {
       const key = `${est.grado}|${est.carrera}`;
@@ -565,7 +619,6 @@ const exportarEstadisticasExcel = async (req, res) => {
       return a.carrera.localeCompare(b.carrera);
     });
 
-    // Crear workbook
     const workbook = new ExcelJS.Workbook();
     const headerStyle = { font: { bold: true }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF8FF' } } };
 
@@ -591,7 +644,7 @@ const exportarEstadisticasExcel = async (req, res) => {
     wsRecord.getRow(1).eachCell(cell => cell.style = headerStyle);
     mejorRecord.forEach(est => wsRecord.addRow(est));
 
-    // Hoja 3: Resumen por grado y carrera (datos de la gráfica)
+    // Hoja 3: Resumen por grado y carrera
     const wsResumen = workbook.addWorksheet('Resumen por grado y carrera');
     wsResumen.columns = [
       { header: 'Grado', key: 'grado', width: 8 },
