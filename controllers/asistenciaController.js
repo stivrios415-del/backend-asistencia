@@ -312,6 +312,7 @@ const exportarReporteExcel = async (req, res) => {
 };
 
 // Exportar reporte completo (todos los estudiantes, Presente/Ausente) con tablas separadas por grado/sección y mostrando el nombre del profesor
+// CORREGIDO: la fecha ahora se muestra correctamente sin desfase por zona horaria
 const exportarReporteCompletoExcel = async (req, res) => {
   const { fecha, usuario, nombreProfesor, grado, seccion } = req.query;
   if (!fecha) {
@@ -357,8 +358,16 @@ const exportarReporteCompletoExcel = async (req, res) => {
     const headerStyle = { font: { bold: true }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF8FF' } } };
     let currentRow = 1;
 
-    const fechaObj = new Date(fecha);
-    const fechaLegible = fechaObj.toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    // 🔧 CORRECCIÓN: Forzar la fecha a mediodía UTC para evitar el desplazamiento de día
+    // y formatear explícitamente con la zona horaria de Honduras.
+    const fechaObj = new Date(fecha + 'T12:00:00');
+    const fechaLegible = fechaObj.toLocaleDateString('es-ES', { 
+      weekday: 'long', 
+      year: 'numeric', 
+      month: 'long', 
+      day: 'numeric',
+      timeZone: 'America/Tegucigalpa' 
+    });
     const fechaRow = worksheet.addRow([`Fecha: ${fechaLegible}`]);
     worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
     currentRow++;
