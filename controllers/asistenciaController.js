@@ -357,7 +357,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
     const headerStyle = { font: { bold: true }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF8FF' } } };
     let currentRow = 1;
 
-    // Fecha formateada con día de la semana
     const fechaObj = new Date(fecha);
     const fechaLegible = fechaObj.toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
     const fechaRow = worksheet.addRow([`Fecha: ${fechaLegible}`]);
@@ -440,7 +439,7 @@ const exportarReporteCompletoExcel = async (req, res) => {
   }
 };
 
-// Listar reportes generados (función faltante)
+// Listar reportes generados
 const getReportesGenerados = async (req, res) => {
   const { data, error } = await supabase
     .from('reportes_generados')
@@ -448,6 +447,72 @@ const getReportesGenerados = async (req, res) => {
     .order('fecha_generacion', { ascending: false });
   if (error) return res.status(400).json({ error: error.message });
   res.json(data);
+};
+
+// ========== ESTADÍSTICAS DE ASISTENCIA ==========
+const getEstadisticas = async (req, res) => {
+  try {
+    const { fechaInicio, fechaFin } = req.query;
+    let inicio, fin;
+    if (fechaInicio && fechaFin) {
+      inicio = fechaInicio;
+      fin = fechaFin;
+    } else {
+      const hoy = new Date();
+      inicio = new Date(hoy.getFullYear(), hoy.getMonth(), 1).toISOString().split('T')[0];
+      fin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).toISOString().split('T')[0];
+    }
+
+    // 1. Obtener todos los estudiantes
+    const { data: estudiantes, error: errEst } = await supabase
+      .from('estudiantes')
+      .select('cedula, nombre, apellido, grado, seccion');
+    if (errEst) throw errEst;
+
+    // 2. Obtener todas las asistencias en el rango
+    const { data: asistencias, error: errAsis } = await supabase
+      .from('asistencia')
+      .select('cedula, fecha')
+      .gte('fecha', inicio)
+      .lte('fecha', fin);
+    if (errAsis) throw errAsis;
+
+    // 3. Contar asistencias por estudiante
+    const asistenciaCount = {};
+    asistencias.forEach(a => {
+      asistenciaCount[a.cedula] = (asistenciaCount[a.cedula] || 0) + 1;
+    });
+
+    // 4. Calcular total de días del rango (calendario)
+    const startDate = new Date(inicio);
+    const endDate = new Date(fin);
+    const totalDias = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
+
+    // 5. Calcular faltas y asistencias por estudiante
+    const estadisticas = estudiantes.map(est => {
+      const asistencias = asistenciaCount[est.cedula] || 0;
+      const faltas = totalDias - asistencias;
+      return {
+        ...est,
+        asistencias,
+        faltas: faltas > 0 ? faltas : 0,
+        totalDias
+      };
+    });
+
+    // 6. Obtener top 10 de más faltas y mejor récord (más asistencias)
+    const masFaltas = [...estadisticas]
+      .sort((a, b) => b.faltas - a.faltas)
+      .slice(0, 10);
+    const mejorRecord = [...estadisticas]
+      .sort((a, b) => b.asistencias - a.asistencias)
+      .slice(0, 10);
+
+    res.json({ masFaltas, mejorRecord, totalDias });
+  } catch (error) {
+    console.error('❌ Error en estadísticas:', error);
+    res.status(500).json({ error: error.message });
+  }
 };
 
 module.exports = {
@@ -459,5 +524,6 @@ module.exports = {
   getReporteAsistencia,
   exportarReporteExcel,
   exportarReporteCompletoExcel,
-  getReportesGenerados
+  getReportesGenerados,
+  getEstadisticas
 };
