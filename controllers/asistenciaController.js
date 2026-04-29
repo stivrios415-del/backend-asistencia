@@ -455,7 +455,7 @@ const getReportesGenerados = async (req, res) => {
   res.json(data);
 };
 
-// ========== ESTADÍSTICAS DE ASISTENCIA (JSON) ==========
+// ========== ESTADÍSTICAS DE ASISTENCIA (JSON) Y RESUMEN POR GRADO ==========
 const getEstadisticas = async (req, res) => {
   try {
     const { fechaInicio, fechaFin } = req.query;
@@ -504,7 +504,31 @@ const getEstadisticas = async (req, res) => {
     const masFaltas = [...estadisticas].sort((a, b) => b.faltas - a.faltas).slice(0, 10);
     const mejorRecord = [...estadisticas].sort((a, b) => b.asistencias - a.asistencias).slice(0, 10);
 
-    res.json({ masFaltas, mejorRecord, totalDias });
+    // ✅ Resumen por grado para gráfica de pastel
+    const resumenGrado = {};
+    estadisticas.forEach(est => {
+      const grado = est.grado;
+      if (!resumenGrado[grado]) {
+        resumenGrado[grado] = {
+          totalEstudiantes: 0,
+          totalAsistencias: 0,
+          totalFaltas: 0
+        };
+      }
+      resumenGrado[grado].totalEstudiantes++;
+      resumenGrado[grado].totalAsistencias += est.asistencias;
+      resumenGrado[grado].totalFaltas += est.faltas;
+    });
+    const resumenArray = Object.entries(resumenGrado).map(([grado, data]) => ({
+      grado,
+      totalEstudiantes: data.totalEstudiantes,
+      totalAsistencias: data.totalAsistencias,
+      totalFaltas: data.totalFaltas,
+      promedioAsistencias: (data.totalAsistencias / data.totalEstudiantes).toFixed(1),
+      promedioFaltas: (data.totalFaltas / data.totalEstudiantes).toFixed(1)
+    })).sort((a, b) => a.grado.localeCompare(b.grado));
+
+    res.json({ masFaltas, mejorRecord, totalDias, resumenGrado: resumenArray });
   } catch (error) {
     console.error('❌ Error en estadísticas:', error);
     res.status(500).json({ error: error.message });
@@ -613,7 +637,7 @@ const exportarEstadisticasExcel = async (req, res) => {
     wsRecord.getRow(1).eachCell(cell => cell.style = headerStyle);
     mejorRecord.forEach(est => wsRecord.addRow(est));
 
-    // Hoja 3: Resumen por grado (para gráfica)
+    // Hoja 3: Resumen por grado
     const wsResumen = workbook.addWorksheet('Resumen por grado');
     wsResumen.columns = [
       { header: 'Grado', key: 'grado', width: 8 },
