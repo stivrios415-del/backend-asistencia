@@ -1,14 +1,27 @@
 const supabase = require('../config/supabase');
 const ExcelJS = require('exceljs');
 
-// 🔧 Función auxiliar para formatear fecha con día de la semana (ej: "Miércoles, 28 de abril de 2026")
-function formatearFechaConDia(fechaISO) {
-  const fecha = new Date(fechaISO);
-  const opciones = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
-  let fechaFormateada = fecha.toLocaleDateString('es-ES', opciones);
-  // Capitalizar primera letra del día
-  fechaFormateada = fechaFormateada.charAt(0).toUpperCase() + fechaFormateada.slice(1);
-  return fechaFormateada;
+// ========== FUNCIÓN AUXILIAR PARA CONTAR FALTAS EN EL MES ==========
+async function contarFaltasEnMes(cedula, año, mes) {
+  const primerDia = new Date(año, mes - 1, 1).toISOString().split('T')[0];
+  const hoy = new Date();
+  let ultimoDia;
+  if (año === hoy.getFullYear() && mes === hoy.getMonth() + 1) {
+    ultimoDia = hoy.toISOString().split('T')[0];
+  } else {
+    ultimoDia = new Date(año, mes, 0).toISOString().split('T')[0];
+  }
+  const { data, error } = await supabase
+    .from('asistencia')
+    .select('fecha')
+    .eq('cedula', cedula)
+    .gte('fecha', primerDia)
+    .lte('fecha', ultimoDia);
+  if (error) return 0;
+  const diasConAsistencia = data.length;
+  const diasTotales = Math.ceil((new Date(ultimoDia) - new Date(primerDia)) / (1000 * 60 * 60 * 24)) + 1;
+  const faltas = diasTotales - diasConAsistencia;
+  return faltas > 0 ? faltas : 0;
 }
 
 // Registrar asistencia (por cédula escaneada)
@@ -80,9 +93,11 @@ const registrarAsistencia = async (req, res) => {
   });
 };
 
-// Obtener asistencia del día
+// Obtener asistencia del día (con faltas en el mes)
 const getAsistenciaHoy = async (req, res) => {
   const hoy = new Date().toISOString().split('T')[0];
+  const añoActual = new Date().getFullYear();
+  const mesActual = new Date().getMonth() + 1;
   console.log(`📋 Obteniendo asistencia del día: ${hoy}`);
   
   const { data, error } = await supabase
@@ -100,15 +115,23 @@ const getAsistenciaHoy = async (req, res) => {
     return res.status(400).json({ error: error.message });
   }
   
-  const asistencia = data.map(a => ({
-    id: a.id,
-    fecha: a.fecha,
-    hora: a.hora,
-    estudiante: a.estudiantes
+  const asistenciaConFaltas = await Promise.all(data.map(async (item) => {
+    const cedula = item.estudiantes?.cedula;
+    let faltas = 0;
+    if (cedula) {
+      faltas = await contarFaltasEnMes(cedula, añoActual, mesActual);
+    }
+    return {
+      id: item.id,
+      fecha: item.fecha,
+      hora: item.hora,
+      estudiante: item.estudiantes,
+      faltasEnMes: faltas
+    };
   }));
   
-  console.log(`✅ Encontrados ${asistencia.length} registros`);
-  res.json(asistencia);
+  console.log(`✅ Encontrados ${asistenciaConFaltas.length} registros`);
+  res.json(asistenciaConFaltas);
 };
 
 // Obtener asistencia por fecha específica
@@ -216,7 +239,7 @@ const getReporteAsistencia = async (req, res) => {
   res.json(data);
 };
 
-// Exportar a Excel (solo estudiantes con asistencia, rango de fechas) – sin cambios
+// Exportar a Excel (solo estudiantes con asistencia, rango de fechas)
 const exportarReporteExcel = async (req, res) => {
   const { fechaInicio, fechaFin, usuario } = req.query;
   console.log(`📊 Exportando Excel - Desde: ${fechaInicio}, Hasta: ${fechaFin}, Usuario: ${usuario || 'anon'}`);
@@ -288,16 +311,15 @@ const exportarReporteExcel = async (req, res) => {
   res.json({ success: true, url: archivo_url });
 };
 
-// 🔹 Exportar reporte completo (todos los estudiantes, Presente/Ausente) con tablas separadas por grado/sección Y MOSTRANDO LA FECHA
+// Exportar reporte completo (todos los estudiantes, Presente/Ausente) con tablas separadas por grado/sección y mostrando el nombre del profesor
 const exportarReporteCompletoExcel = async (req, res) => {
-  const { fecha, usuario, grado, seccion } = req.query;
+  const { fecha, usuario, nombreProfesor, grado, seccion } = req.query;
   if (!fecha) {
     return res.status(400).json({ error: 'Debe proporcionar una fecha (YYYY-MM-DD)' });
   }
-  console.log(`📊 Exportando reporte completo - Fecha: ${fecha}, Usuario: ${usuario || 'anon'}, Grado: ${grado || 'todos'}, Sección: ${seccion || 'todas'}`);
+  console.log(`📊 Exportando reporte completo - Fecha: ${fecha}, Usuario: ${usuario || 'anon'}, Nombre: ${nombreProfesor || 'No especificado'}, Grado: ${grado || 'todos'}, Sección: ${seccion || 'todas'}`);
 
   try {
-    // 1. Obtener estudiantes con filtros y orden
     let query = supabase
       .from('estudiantes')
       .select('cedula, nombre, apellido, grado, seccion, carrera')
@@ -311,7 +333,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
     const { data: estudiantes, error: errEstudiantes } = await query;
     if (errEstudiantes) throw errEstudiantes;
 
-    // 2. Obtener asistencias de esa fecha
     const { data: asistencias, error: errAsistencias } = await supabase
       .from('asistencia')
       .select('cedula, hora')
@@ -319,11 +340,8 @@ const exportarReporteCompletoExcel = async (req, res) => {
     if (errAsistencias) throw errAsistencias;
 
     const asistenciaMap = new Map();
-    asistencias.forEach(a => {
-      asistenciaMap.set(a.cedula, a.hora);
-    });
+    asistencias.forEach(a => asistenciaMap.set(a.cedula, a.hora));
 
-    // 3. Agrupar estudiantes por grado y sección
     const grupos = new Map();
     estudiantes.forEach(est => {
       const key = `${est.grado}|${est.seccion}`;
@@ -333,52 +351,48 @@ const exportarReporteCompletoExcel = async (req, res) => {
       grupos.get(key).estudiantes.push(est);
     });
 
-    // 4. Generar Excel con tablas separadas
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet(`Asistencia_${fecha}`);
     
-    // Estilos
     const headerStyle = { font: { bold: true }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF8FF' } } };
-    const dateStyle = { font: { bold: true, size: 12 }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9EAF7' } } };
-    
     let currentRow = 1;
-    
-    // 🔹 Mostrar la fecha con día de la semana
-    const fechaConDia = formatearFechaConDia(fecha);
-    const dateRow = worksheet.addRow([`Fecha: ${fechaConDia}`]);
+
+    // Fecha formateada con día de la semana
+    const fechaObj = new Date(fecha);
+    const fechaLegible = fechaObj.toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const fechaRow = worksheet.addRow([`Fecha: ${fechaLegible}`]);
     worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
-    dateRow.font = { bold: true, size: 12 };
-    dateRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE6F0FA' } };
     currentRow++;
-    
-    // Fila en blanco opcional
+
+    if (nombreProfesor) {
+      const profRow = worksheet.addRow([`Generado por: ${nombreProfesor}`]);
+      worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
+      currentRow++;
+    }
+
     worksheet.addRow([]);
     currentRow++;
-    
-    // Recorrer cada grupo ordenado por grado y sección
+
     const gruposOrdenados = Array.from(grupos.values()).sort((a, b) => {
       if (a.grado !== b.grado) return a.grado.localeCompare(b.grado);
       return a.seccion.localeCompare(b.seccion);
     });
     
     for (const grupo of gruposOrdenados) {
-      // Título del grupo (fila combinada)
       const titleRow = worksheet.addRow([`Grado ${grupo.grado} - Sección ${grupo.seccion}`]);
       worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
       titleRow.font = { bold: true, size: 12 };
       titleRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9EAF7' } };
       currentRow++;
       
-      // Encabezados de columnas
       const headerRow = worksheet.addRow(['Cédula', 'Nombre', 'Apellido', 'Grado', 'Sección', 'Carrera', 'Estado', 'Hora de Escaneo']);
       headerRow.eachCell(cell => { cell.style = headerStyle; });
       currentRow++;
       
-      // Filas de datos del grupo
       for (const est of grupo.estudiantes) {
         const hora = asistenciaMap.get(est.cedula);
         const presente = !!hora;
-        const dataRow = worksheet.addRow([
+        worksheet.addRow([
           est.cedula,
           est.nombre,
           est.apellido,
@@ -390,32 +404,22 @@ const exportarReporteCompletoExcel = async (req, res) => {
         ]);
         currentRow++;
       }
-      
-      // Fila en blanco como separador entre grupos
       worksheet.addRow([]);
       currentRow++;
     }
     
-    // Ajustar anchos de columnas
-    worksheet.columns.forEach(col => {
-      col.width = 15;
-    });
+    worksheet.columns.forEach(col => { col.width = 15; });
 
-    // 5. Guardar buffer y subir a Storage
     const buffer = await workbook.xlsx.writeBuffer();
     const fileName = `reporte_completo${grado ? `_${grado}` : ''}${seccion ? `_sec${seccion}` : ''}_${fecha}_${Date.now()}.xlsx`;
     const { data: uploadData, error: uploadError } = await supabase.storage
       .from('reportes')
-      .upload(fileName, buffer, {
-        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      });
+      .upload(fileName, buffer, { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     if (uploadError) throw uploadError;
 
-    // 6. Obtener URL pública
     const { data: urlData } = supabase.storage.from('reportes').getPublicUrl(fileName);
     const archivo_url = urlData.publicUrl;
 
-    // 7. Guardar metadata
     try {
       await supabase.from('reportes_generados').insert([{
         fecha_inicio: fecha,
@@ -436,8 +440,7 @@ const exportarReporteCompletoExcel = async (req, res) => {
   }
 };
 
-// ========== FUNCIÓN FALTANTE ==========
-// Listar reportes generados (para historial, opcional)
+// Listar reportes generados (función faltante)
 const getReportesGenerados = async (req, res) => {
   const { data, error } = await supabase
     .from('reportes_generados')
