@@ -1,196 +1,48 @@
-const supabase = require('../config/supabase');
-const { parseExcel } = require('../utils/excelParser');
+const ExcelJS = require('exceljs');
 
-// Obtener todos los estudiantes
-const getEstudiantes = async (req, res) => {
-  console.log('📋 [estudiantes] GET / - Obteniendo todos los estudiantes');
-  try {
-    const { data, error } = await supabase
-      .from('estudiantes')
-      .select('*')
-      .order('apellido', { ascending: true });
+/**
+ * Parsea un archivo Excel (.xlsx) y extrae los estudiantes.
+ * Espera las columnas:
+ *   1: cédula (obligatorio)
+ *   2: nombre (obligatorio)
+ *   3: apellido (opcional)
+ *   4: grado (opcional)
+ *   5: sección (opcional)
+ *   6: carrera (opcional)
+ */
+async function parseExcel(fileBuffer) {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(fileBuffer);
+  const worksheet = workbook.worksheets[0];
+  const estudiantes = [];
+
+  // Asumimos que la primera fila es encabezado, empezamos desde la fila 2
+  for (let i = 2; i <= worksheet.rowCount; i++) {
+    const row = worksheet.getRow(i);
     
-    if (error) {
-      console.error('❌ Error en getEstudiantes:', error.message);
-      return res.status(400).json({ error: error.message });
-    }
-    console.log(`✅ Encontrados ${data.length} estudiantes`);
-    res.json(data);
-  } catch (err) {
-    console.error('❌ Excepción en getEstudiantes:', err.message);
-    res.status(500).json({ error: 'Error interno del servidor' });
-  }
-};
+    // Leer celdas y limpiar valores
+    const cedula = row.getCell(1).value?.toString().trim();
+    const nombre = row.getCell(2).value?.toString().trim();
+    const apellido = row.getCell(3).value?.toString().trim() || '';
+    const grado = row.getCell(4).value?.toString().trim() || '';
+    const seccion = row.getCell(5).value?.toString().trim() || '';
+    const carrera = row.getCell(6).value?.toString().trim() || null;
 
-// Buscar estudiante por cédula
-const getEstudianteByCedula = async (req, res) => {
-  const { cedula } = req.params;
-  console.log(`🔍 [estudiantes] GET /${cedula} - Buscando por cédula`);
+    // Validación mínima: cédula y nombre son obligatorios
+    if (cedula && nombre) {
+      estudiantes.push({
+        cedula,
+        nombre,
+        apellido,
+        grado,
+        seccion,
+        carrera,
+      });
+    }
+  }
   
-  try {
-    const { data, error } = await supabase
-      .from('estudiantes')
-      .select('*')
-      .eq('cedula', cedula)
-      .maybeSingle();
-    
-    if (error) {
-      console.error('❌ Error en getEstudianteByCedula:', error.message);
-      return res.status(500).json({ error: 'Error al buscar estudiante' });
-    }
-    
-    if (!data) {
-      console.log(`⚠️ Estudiante con cédula ${cedula} no encontrado`);
-      return res.status(404).json({ error: 'Estudiante no encontrado' });
-    }
-    
-    console.log(`✅ Estudiante encontrado: ${data.nombre} ${data.apellido}`);
-    res.json(data);
-  } catch (err) {
-    console.error('❌ Excepción en getEstudianteByCedula:', err.message);
-    res.status(500).json({ error: 'Error interno del servidor' });
-  }
-};
+  return estudiantes;
+}
 
-// Crear un estudiante individual (incluye carrera)
-const createEstudiante = async (req, res) => {
-  const { cedula, nombre, apellido, grado, seccion, carrera } = req.body;
-  console.log(`📝 [estudiantes] POST / - Creando estudiante ${cedula}`);
-  
-  try {
-    const { data, error } = await supabase
-      .from('estudiantes')
-      .insert([{ cedula, nombre, apellido, grado, seccion, carrera }])
-      .select();
-    
-    if (error) {
-      console.error('❌ Error en createEstudiante:', error.message);
-      return res.status(400).json({ error: error.message });
-    }
-    console.log(`✅ Estudiante creado: ${cedula}`);
-    res.json(data[0]);
-  } catch (err) {
-    console.error('❌ Excepción en createEstudiante:', err.message);
-    res.status(500).json({ error: 'Error interno del servidor' });
-  }
-};
-
-// Carga masiva desde Excel (carrera ya viene incluido desde parseExcel)
-const bulkUploadEstudiantes = async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No se recibió ningún archivo' });
-    }
-    
-    const estudiantes = await parseExcel(req.file.buffer);
-    const resultados = { exitosos: [], fallidos: [] };
-    
-    for (const estudiante of estudiantes) {
-      const { error } = await supabase
-        .from('estudiantes')
-        .insert([estudiante]);
-      
-      if (error) {
-        resultados.fallidos.push({ ...estudiante, error: error.message });
-      } else {
-        resultados.exitosos.push(estudiante);
-      }
-    }
-    
-    res.json({
-      message: `Carga completada: ${resultados.exitosos.length} exitosos, ${resultados.fallidos.length} fallidos`,
-      resultados
-    });
-  } catch (err) {
-    console.error('❌ Error en bulkUpload:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-};
-
-// Actualizar estudiante (incluye carrera)
-const updateEstudiante = async (req, res) => {
-  const { cedula } = req.params;
-  const { nombre, apellido, grado, seccion, carrera } = req.body;
-  console.log(`✏️ [estudiantes] PUT /${cedula} - Actualizando`);
-  
-  try {
-    const { data, error } = await supabase
-      .from('estudiantes')
-      .update({ nombre, apellido, grado, seccion, carrera })
-      .eq('cedula', cedula)
-      .select();
-    
-    if (error) {
-      console.error('❌ Error en updateEstudiante:', error.message);
-      return res.status(400).json({ error: error.message });
-    }
-    res.json(data[0]);
-  } catch (err) {
-    console.error('❌ Excepción en updateEstudiante:', err.message);
-    res.status(500).json({ error: 'Error interno del servidor' });
-  }
-};
-
-// Eliminar estudiante
-const deleteEstudiante = async (req, res) => {
-  const { cedula } = req.params;
-  console.log(`🗑️ [estudiantes] DELETE /${cedula} - Eliminando`);
-  
-  try {
-    const { error } = await supabase
-      .from('estudiantes')
-      .delete()
-      .eq('cedula', cedula);
-    
-    if (error) {
-      console.error('❌ Error en deleteEstudiante:', error.message);
-      return res.status(400).json({ error: error.message });
-    }
-    res.json({ message: 'Estudiante eliminado' });
-  } catch (err) {
-    console.error('❌ Excepción en deleteEstudiante:', err.message);
-    res.status(500).json({ error: 'Error interno del servidor' });
-  }
-};
-
-// Obtener grados y secciones únicos (sin duplicados) para filtros
-const getGradosSecciones = async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from('estudiantes')
-      .select('grado, seccion')
-      .order('grado', { ascending: true })
-      .order('seccion', { ascending: true });
-    
-    if (error) {
-      console.error('❌ Error en getGradosSecciones:', error.message);
-      return res.status(400).json({ error: error.message });
-    }
-    
-    // Filtrar duplicados combinando grado+seccion
-    const uniqueMap = new Map();
-    data.forEach(item => {
-      const key = `${item.grado}|${item.seccion}`;
-      if (!uniqueMap.has(key)) {
-        uniqueMap.set(key, { grado: item.grado, seccion: item.seccion });
-      }
-    });
-    const gradosSecciones = Array.from(uniqueMap.values());
-    
-    console.log(`✅ Grados y secciones únicos encontrados: ${gradosSecciones.length}`);
-    res.json(gradosSecciones);
-  } catch (err) {
-    console.error('❌ Excepción en getGradosSecciones:', err.message);
-    res.status(500).json({ error: 'Error interno del servidor' });
-  }
-};
-
-module.exports = {
-  getEstudiantes,
-  getEstudianteByCedula,
-  createEstudiante,
-  bulkUploadEstudiantes,
-  updateEstudiante,
-  deleteEstudiante,
-  getGradosSecciones   // <-- nueva función exportada
-};
+// ✅ Exportación correcta (objeto con la función)
+module.exports = { parseExcel };
