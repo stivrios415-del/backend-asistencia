@@ -312,7 +312,6 @@ const exportarReporteExcel = async (req, res) => {
 };
 
 // Exportar reporte completo (todos los estudiantes, Presente/Ausente) con tablas separadas por grado/sección y mostrando el nombre del profesor
-// CORREGIDO: la fecha ahora se muestra correctamente sin desfase por zona horaria
 const exportarReporteCompletoExcel = async (req, res) => {
   const { fecha, usuario, nombreProfesor, grado, seccion } = req.query;
   if (!fecha) {
@@ -358,8 +357,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
     const headerStyle = { font: { bold: true }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF8FF' } } };
     let currentRow = 1;
 
-    // 🔧 CORRECCIÓN: Forzar la fecha a mediodía UTC para evitar el desplazamiento de día
-    // y formatear explícitamente con la zona horaria de Honduras.
     const fechaObj = new Date(fecha + 'T12:00:00');
     const fechaLegible = fechaObj.toLocaleDateString('es-ES', { 
       weekday: 'long', 
@@ -458,7 +455,7 @@ const getReportesGenerados = async (req, res) => {
   res.json(data);
 };
 
-// ========== ESTADÍSTICAS DE ASISTENCIA ==========
+// ========== ESTADÍSTICAS DE ASISTENCIA (JSON) ==========
 const getEstadisticas = async (req, res) => {
   try {
     const { fechaInicio, fechaFin } = req.query;
@@ -472,13 +469,11 @@ const getEstadisticas = async (req, res) => {
       fin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).toISOString().split('T')[0];
     }
 
-    // 1. Obtener todos los estudiantes
     const { data: estudiantes, error: errEst } = await supabase
       .from('estudiantes')
       .select('cedula, nombre, apellido, grado, seccion');
     if (errEst) throw errEst;
 
-    // 2. Obtener todas las asistencias en el rango
     const { data: asistencias, error: errAsis } = await supabase
       .from('asistencia')
       .select('cedula, fecha')
@@ -486,18 +481,15 @@ const getEstadisticas = async (req, res) => {
       .lte('fecha', fin);
     if (errAsis) throw errAsis;
 
-    // 3. Contar asistencias por estudiante
     const asistenciaCount = {};
     asistencias.forEach(a => {
       asistenciaCount[a.cedula] = (asistenciaCount[a.cedula] || 0) + 1;
     });
 
-    // 4. Calcular total de días del rango (calendario)
     const startDate = new Date(inicio);
     const endDate = new Date(fin);
     const totalDias = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
 
-    // 5. Calcular faltas y asistencias por estudiante
     const estadisticas = estudiantes.map(est => {
       const asistencias = asistenciaCount[est.cedula] || 0;
       const faltas = totalDias - asistencias;
@@ -509,17 +501,145 @@ const getEstadisticas = async (req, res) => {
       };
     });
 
-    // 6. Obtener top 10 de más faltas y mejor récord (más asistencias)
-    const masFaltas = [...estadisticas]
-      .sort((a, b) => b.faltas - a.faltas)
-      .slice(0, 10);
-    const mejorRecord = [...estadisticas]
-      .sort((a, b) => b.asistencias - a.asistencias)
-      .slice(0, 10);
+    const masFaltas = [...estadisticas].sort((a, b) => b.faltas - a.faltas).slice(0, 10);
+    const mejorRecord = [...estadisticas].sort((a, b) => b.asistencias - a.asistencias).slice(0, 10);
 
     res.json({ masFaltas, mejorRecord, totalDias });
   } catch (error) {
     console.error('❌ Error en estadísticas:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// ========== EXPORTAR ESTADÍSTICAS A EXCEL ==========
+const exportarEstadisticasExcel = async (req, res) => {
+  try {
+    const { fechaInicio, fechaFin } = req.query;
+    let inicio, fin;
+    if (fechaInicio && fechaFin) {
+      inicio = fechaInicio;
+      fin = fechaFin;
+    } else {
+      const hoy = new Date();
+      inicio = new Date(hoy.getFullYear(), hoy.getMonth(), 1).toISOString().split('T')[0];
+      fin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).toISOString().split('T')[0];
+    }
+
+    // Obtener todos los estudiantes
+    const { data: estudiantes, error: errEst } = await supabase
+      .from('estudiantes')
+      .select('cedula, nombre, apellido, grado, seccion');
+    if (errEst) throw errEst;
+
+    // Obtener asistencias en el rango
+    const { data: asistencias, error: errAsis } = await supabase
+      .from('asistencia')
+      .select('cedula, fecha')
+      .gte('fecha', inicio)
+      .lte('fecha', fin);
+    if (errAsis) throw errAsis;
+
+    const asistenciaCount = {};
+    asistencias.forEach(a => {
+      asistenciaCount[a.cedula] = (asistenciaCount[a.cedula] || 0) + 1;
+    });
+
+    const startDate = new Date(inicio);
+    const endDate = new Date(fin);
+    const totalDias = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
+
+    // Estadísticas por estudiante
+    const estadisticas = estudiantes.map(est => {
+      const asistencias = asistenciaCount[est.cedula] || 0;
+      const faltas = totalDias - asistencias;
+      return {
+        ...est,
+        asistencias,
+        faltas: faltas > 0 ? faltas : 0,
+        totalDias
+      };
+    });
+
+    // Top 10 más faltas y mejor récord
+    const masFaltas = [...estadisticas].sort((a, b) => b.faltas - a.faltas).slice(0, 10);
+    const mejorRecord = [...estadisticas].sort((a, b) => b.asistencias - a.asistencias).slice(0, 10);
+
+    // Resumen por grado
+    const resumenGrado = {};
+    estadisticas.forEach(est => {
+      const grado = est.grado;
+      if (!resumenGrado[grado]) {
+        resumenGrado[grado] = {
+          totalEstudiantes: 0,
+          totalAsistencias: 0,
+          totalFaltas: 0
+        };
+      }
+      resumenGrado[grado].totalEstudiantes++;
+      resumenGrado[grado].totalAsistencias += est.asistencias;
+      resumenGrado[grado].totalFaltas += est.faltas;
+    });
+    const resumenArray = Object.entries(resumenGrado).map(([grado, data]) => ({
+      grado,
+      totalEstudiantes: data.totalEstudiantes,
+      totalAsistencias: data.totalAsistencias,
+      totalFaltas: data.totalFaltas,
+      promedioAsistencias: (data.totalAsistencias / data.totalEstudiantes).toFixed(1),
+      promedioFaltas: (data.totalFaltas / data.totalEstudiantes).toFixed(1)
+    })).sort((a, b) => a.grado.localeCompare(b.grado));
+
+    // Crear workbook
+    const workbook = new ExcelJS.Workbook();
+    const headerStyle = { font: { bold: true }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF8FF' } } };
+
+    // Hoja 1: Más faltas
+    const wsFaltas = workbook.addWorksheet('Más faltas');
+    wsFaltas.columns = [
+      { header: 'Cédula', key: 'cedula', width: 15 },
+      { header: 'Nombre', key: 'nombre', width: 20 },
+      { header: 'Apellido', key: 'apellido', width: 20 },
+      { header: 'Grado', key: 'grado', width: 8 },
+      { header: 'Sección', key: 'seccion', width: 8 },
+      { header: 'Asistencias', key: 'asistencias', width: 12 },
+      { header: 'Faltas', key: 'faltas', width: 10 },
+      { header: 'Total días', key: 'totalDias', width: 12 }
+    ];
+    wsFaltas.getRow(1).eachCell(cell => cell.style = headerStyle);
+    masFaltas.forEach(est => wsFaltas.addRow(est));
+
+    // Hoja 2: Mejor récord
+    const wsRecord = workbook.addWorksheet('Mejor récord');
+    wsRecord.columns = wsFaltas.columns;
+    wsRecord.getRow(1).eachCell(cell => cell.style = headerStyle);
+    mejorRecord.forEach(est => wsRecord.addRow(est));
+
+    // Hoja 3: Resumen por grado (para gráfica)
+    const wsResumen = workbook.addWorksheet('Resumen por grado');
+    wsResumen.columns = [
+      { header: 'Grado', key: 'grado', width: 8 },
+      { header: 'Total estudiantes', key: 'totalEstudiantes', width: 18 },
+      { header: 'Total asistencias', key: 'totalAsistencias', width: 18 },
+      { header: 'Total faltas', key: 'totalFaltas', width: 15 },
+      { header: 'Promedio asistencias', key: 'promedioAsistencias', width: 20 },
+      { header: 'Promedio faltas', key: 'promedioFaltas', width: 15 }
+    ];
+    wsResumen.getRow(1).eachCell(cell => cell.style = headerStyle);
+    resumenArray.forEach(row => wsResumen.addRow(row));
+
+    // Generar buffer y subir a Storage
+    const buffer = await workbook.xlsx.writeBuffer();
+    const fileName = `estadisticas_asistencia_${inicio}_a_${fin}_${Date.now()}.xlsx`;
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('reportes')
+      .upload(fileName, buffer, { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    if (uploadError) throw uploadError;
+
+    const { data: urlData } = supabase.storage.from('reportes').getPublicUrl(fileName);
+    const archivo_url = urlData.publicUrl;
+
+    res.json({ success: true, url: archivo_url });
+  } catch (error) {
+    console.error('❌ Error exportando estadísticas:', error);
     res.status(500).json({ error: error.message });
   }
 };
@@ -534,5 +654,6 @@ module.exports = {
   exportarReporteExcel,
   exportarReporteCompletoExcel,
   getReportesGenerados,
-  getEstadisticas
+  getEstadisticas,
+  exportarEstadisticasExcel
 };
