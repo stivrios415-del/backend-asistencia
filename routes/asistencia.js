@@ -12,5 +12,6 @@ router.get('/exportar-excel', asistenciaController.exportarReporteExcel);
 router.get('/reportes-generados', asistenciaController.getReportesGenerados);
 router.get('/reporte-completo-excel', asistenciaController.exportarReporteCompletoExcel);
 router.get('/estadisticas', asistenciaController.getEstadisticas);
+router.get('/estadisticas/excel', asistenciaController.exportarEstadisticasExcel);
 
 module.exports = router;
