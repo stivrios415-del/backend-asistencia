@@ -3,7 +3,6 @@ const ExcelJS = require('exceljs');
 
 // ========== FUNCIÓN AUXILIAR PARA CONTAR FALTAS EN EL MES ==========
 async function contarFaltasEnMes(cedula, año, mes) {
-  // ... (igual que antes, sin cambios)
   const primerDia = new Date(año, mes - 1, 1).toISOString().split('T')[0];
   const hoy = new Date();
   let ultimoDia;
@@ -27,7 +26,6 @@ async function contarFaltasEnMes(cedula, año, mes) {
 
 // Registrar asistencia (por cédula escaneada)
 const registrarAsistencia = async (req, res) => {
-  // ... (sin cambios, igual que en tu código actual)
   console.log('📥 POST /api/asistencia - Body:', req.body);
   const { cedula } = req.body;
   if (!cedula) {
@@ -86,7 +84,6 @@ const registrarAsistencia = async (req, res) => {
 
 // Obtener asistencia del día (con faltas en el mes)
 const getAsistenciaHoy = async (req, res) => {
-  // ... (sin cambios)
   const hoy = new Date().toISOString().split('T')[0];
   const añoActual = new Date().getFullYear();
   const mesActual = new Date().getMonth() + 1;
@@ -124,7 +121,6 @@ const getAsistenciaHoy = async (req, res) => {
 
 // Obtener asistencia por fecha específica
 const getAsistenciaByFecha = async (req, res) => {
-  // ... (sin cambios)
   const { fecha } = req.params;
   console.log(`📅 Obteniendo asistencia para fecha: ${fecha}`);
   const { data, error } = await supabase
@@ -145,7 +141,6 @@ const getAsistenciaByFecha = async (req, res) => {
 
 // Obtener asistencia por grado y sección (reportes)
 const getAsistenciaPorGrado = async (req, res) => {
-  // ... (sin cambios)
   const { grado, seccion, fecha } = req.query;
   const fechaFiltro = fecha || new Date().toISOString().split('T')[0];
   console.log(`📊 Reporte - Grado: ${grado}, Sección: ${seccion}, Fecha: ${fechaFiltro}`);
@@ -171,7 +166,6 @@ const getAsistenciaPorGrado = async (req, res) => {
 
 // Limpiar toda la asistencia del día
 const limpiarAsistenciaHoy = async (req, res) => {
-  // ... (sin cambios)
   const hoy = new Date().toISOString().split('T')[0];
   console.log(`🗑️ Limpiando asistencia del día: ${hoy}`);
   const { error } = await supabase
@@ -188,7 +182,6 @@ const limpiarAsistenciaHoy = async (req, res) => {
 
 // Reporte por rango de fechas (JSON)
 const getReporteAsistencia = async (req, res) => {
-  // ... (sin cambios)
   const { fechaInicio, fechaFin } = req.query;
   console.log(`📊 Reporte JSON - Desde: ${fechaInicio}, Hasta: ${fechaFin}`);
   let query = supabase
@@ -216,7 +209,6 @@ const getReporteAsistencia = async (req, res) => {
 
 // Exportar a Excel (solo estudiantes con asistencia, rango de fechas)
 const exportarReporteExcel = async (req, res) => {
-  // ... (sin cambios)
   const { fechaInicio, fechaFin, usuario } = req.query;
   console.log(`📊 Exportando Excel - Desde: ${fechaInicio}, Hasta: ${fechaFin}, Usuario: ${usuario || 'anon'}`);
   if (!fechaInicio || !fechaFin) {
@@ -280,7 +272,6 @@ const exportarReporteExcel = async (req, res) => {
 
 // Exportar reporte completo (todos los estudiantes, Presente/Ausente) con tablas separadas por grado/sección y mostrando el nombre del profesor
 const exportarReporteCompletoExcel = async (req, res) => {
-  // ... (sin cambios, igual que en tu código)
   const { fecha, usuario, nombreProfesor, grado, seccion } = req.query;
   if (!fecha) {
     return res.status(400).json({ error: 'Debe proporcionar una fecha (YYYY-MM-DD)' });
@@ -457,7 +448,7 @@ const getEstadisticas = async (req, res) => {
     const masFaltas = [...estadisticas].sort((a, b) => b.faltas - a.faltas).slice(0, 10);
     const mejorRecord = [...estadisticas].sort((a, b) => b.asistencias - a.asistencias).slice(0, 10);
 
-    // ✅ Resumen por grado y carrera (para gráfica de pastel)
+    // Resumen por grado y carrera (para gráfica de pastel)
     const resumenGradoCarrera = {};
     estadisticas.forEach(est => {
       const key = `${est.grado}|${est.carrera}`;
@@ -490,9 +481,8 @@ const getEstadisticas = async (req, res) => {
   }
 };
 
-// ========== EXPORTAR ESTADÍSTICAS A EXCEL ==========
+// ========== EXPORTAR ESTADÍSTICAS A EXCEL (CON RESUMEN POR GRADO Y CARRERA) ==========
 const exportarEstadisticasExcel = async (req, res) => {
-  // ... (sin cambios, igual que antes)
   try {
     const { fechaInicio, fechaFin } = req.query;
     let inicio, fin;
@@ -504,59 +494,82 @@ const exportarEstadisticasExcel = async (req, res) => {
       inicio = new Date(hoy.getFullYear(), hoy.getMonth(), 1).toISOString().split('T')[0];
       fin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).toISOString().split('T')[0];
     }
+
+    // Obtener estudiantes con carrera
     const { data: estudiantes, error: errEst } = await supabase
       .from('estudiantes')
-      .select('cedula, nombre, apellido, grado, seccion');
+      .select('cedula, nombre, apellido, grado, seccion, carrera');
     if (errEst) throw errEst;
+
+    // Obtener asistencias en el rango
     const { data: asistencias, error: errAsis } = await supabase
       .from('asistencia')
       .select('cedula, fecha')
       .gte('fecha', inicio)
       .lte('fecha', fin);
     if (errAsis) throw errAsis;
+
     const asistenciaCount = {};
     asistencias.forEach(a => {
       asistenciaCount[a.cedula] = (asistenciaCount[a.cedula] || 0) + 1;
     });
+
     const startDate = new Date(inicio);
     const endDate = new Date(fin);
     const totalDias = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
+
+    // Estadísticas por estudiante
     const estadisticas = estudiantes.map(est => {
       const asistencias = asistenciaCount[est.cedula] || 0;
       const faltas = totalDias - asistencias;
       return {
-        ...est,
+        cedula: est.cedula,
+        nombre: est.nombre,
+        apellido: est.apellido,
+        grado: est.grado,
+        seccion: est.seccion,
+        carrera: est.carrera || 'Sin carrera',
         asistencias,
         faltas: faltas > 0 ? faltas : 0,
         totalDias
       };
     });
+
+    // Top 10 más faltas y mejor récord
     const masFaltas = [...estadisticas].sort((a, b) => b.faltas - a.faltas).slice(0, 10);
     const mejorRecord = [...estadisticas].sort((a, b) => b.asistencias - a.asistencias).slice(0, 10);
-    const resumenGrado = {};
+
+    // Resumen por grado y carrera (mismos datos que la gráfica)
+    const resumenGradoCarrera = {};
     estadisticas.forEach(est => {
-      const grado = est.grado;
-      if (!resumenGrado[grado]) {
-        resumenGrado[grado] = {
-          totalEstudiantes: 0,
+      const key = `${est.grado}|${est.carrera}`;
+      if (!resumenGradoCarrera[key]) {
+        resumenGradoCarrera[key] = {
+          grado: est.grado,
+          carrera: est.carrera,
           totalAsistencias: 0,
-          totalFaltas: 0
+          totalEstudiantes: 0
         };
       }
-      resumenGrado[grado].totalEstudiantes++;
-      resumenGrado[grado].totalAsistencias += est.asistencias;
-      resumenGrado[grado].totalFaltas += est.faltas;
+      resumenGradoCarrera[key].totalAsistencias += est.asistencias;
+      resumenGradoCarrera[key].totalEstudiantes++;
     });
-    const resumenArray = Object.entries(resumenGrado).map(([grado, data]) => ({
-      grado,
-      totalEstudiantes: data.totalEstudiantes,
-      totalAsistencias: data.totalAsistencias,
-      totalFaltas: data.totalFaltas,
-      promedioAsistencias: (data.totalAsistencias / data.totalEstudiantes).toFixed(1),
-      promedioFaltas: (data.totalFaltas / data.totalEstudiantes).toFixed(1)
-    })).sort((a, b) => a.grado.localeCompare(b.grado));
+    const resumenArray = Object.values(resumenGradoCarrera).map(item => ({
+      grado: item.grado,
+      carrera: item.carrera,
+      totalAsistencias: item.totalAsistencias,
+      totalEstudiantes: item.totalEstudiantes,
+      promedioAsistencias: (item.totalAsistencias / item.totalEstudiantes).toFixed(1)
+    })).sort((a, b) => {
+      if (a.grado !== b.grado) return a.grado.localeCompare(b.grado);
+      return a.carrera.localeCompare(b.carrera);
+    });
+
+    // Crear workbook
     const workbook = new ExcelJS.Workbook();
     const headerStyle = { font: { bold: true }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF8FF' } } };
+
+    // Hoja 1: Más faltas
     const wsFaltas = workbook.addWorksheet('Más faltas');
     wsFaltas.columns = [
       { header: 'Cédula', key: 'cedula', width: 15 },
@@ -564,35 +577,42 @@ const exportarEstadisticasExcel = async (req, res) => {
       { header: 'Apellido', key: 'apellido', width: 20 },
       { header: 'Grado', key: 'grado', width: 8 },
       { header: 'Sección', key: 'seccion', width: 8 },
+      { header: 'Carrera', key: 'carrera', width: 20 },
       { header: 'Asistencias', key: 'asistencias', width: 12 },
       { header: 'Faltas', key: 'faltas', width: 10 },
       { header: 'Total días', key: 'totalDias', width: 12 }
     ];
     wsFaltas.getRow(1).eachCell(cell => cell.style = headerStyle);
     masFaltas.forEach(est => wsFaltas.addRow(est));
+
+    // Hoja 2: Mejor récord
     const wsRecord = workbook.addWorksheet('Mejor récord');
     wsRecord.columns = wsFaltas.columns;
     wsRecord.getRow(1).eachCell(cell => cell.style = headerStyle);
     mejorRecord.forEach(est => wsRecord.addRow(est));
-    const wsResumen = workbook.addWorksheet('Resumen por grado');
+
+    // Hoja 3: Resumen por grado y carrera (datos de la gráfica)
+    const wsResumen = workbook.addWorksheet('Resumen por grado y carrera');
     wsResumen.columns = [
       { header: 'Grado', key: 'grado', width: 8 },
-      { header: 'Total estudiantes', key: 'totalEstudiantes', width: 18 },
+      { header: 'Carrera', key: 'carrera', width: 20 },
       { header: 'Total asistencias', key: 'totalAsistencias', width: 18 },
-      { header: 'Total faltas', key: 'totalFaltas', width: 15 },
-      { header: 'Promedio asistencias', key: 'promedioAsistencias', width: 20 },
-      { header: 'Promedio faltas', key: 'promedioFaltas', width: 15 }
+      { header: 'Total estudiantes', key: 'totalEstudiantes', width: 18 },
+      { header: 'Promedio asistencias', key: 'promedioAsistencias', width: 20 }
     ];
     wsResumen.getRow(1).eachCell(cell => cell.style = headerStyle);
     resumenArray.forEach(row => wsResumen.addRow(row));
+
     const buffer = await workbook.xlsx.writeBuffer();
     const fileName = `estadisticas_asistencia_${inicio}_a_${fin}_${Date.now()}.xlsx`;
     const { data: uploadData, error: uploadError } = await supabase.storage
       .from('reportes')
       .upload(fileName, buffer, { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     if (uploadError) throw uploadError;
+
     const { data: urlData } = supabase.storage.from('reportes').getPublicUrl(fileName);
     const archivo_url = urlData.publicUrl;
+
     res.json({ success: true, url: archivo_url });
   } catch (error) {
     console.error('❌ Error exportando estadísticas:', error);
