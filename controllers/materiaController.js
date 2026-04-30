@@ -1,6 +1,5 @@
 const supabase = require('../config/supabase');
 
-// Obtener todas las materias del profesor autenticado
 const getMaterias = async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -15,7 +14,6 @@ const getMaterias = async (req, res) => {
   }
 };
 
-// Crear nueva materia
 const createMateria = async (req, res) => {
   const { nombre, descripcion, grado, seccion, carrera } = req.body;
   try {
@@ -30,7 +28,6 @@ const createMateria = async (req, res) => {
   }
 };
 
-// Actualizar materia
 const updateMateria = async (req, res) => {
   const { id } = req.params;
   const updates = req.body;
@@ -48,7 +45,6 @@ const updateMateria = async (req, res) => {
   }
 };
 
-// Eliminar materia
 const deleteMateria = async (req, res) => {
   const { id } = req.params;
   try {
@@ -64,7 +60,6 @@ const deleteMateria = async (req, res) => {
   }
 };
 
-// Obtener estudiantes de una materia
 const getEstudiantesByMateria = async (req, res) => {
   const { id } = req.params;
   try {
@@ -79,10 +74,9 @@ const getEstudiantesByMateria = async (req, res) => {
   }
 };
 
-// Agregar estudiantes a una materia
 const addEstudiantesToMateria = async (req, res) => {
   const { id } = req.params;
-  const { cedulas } = req.body; // array de cédulas
+  const { cedulas } = req.body;
   try {
     const inserts = cedulas.map(cedula => ({ materia_id: id, estudiante_cedula: cedula }));
     const { error } = await supabase.from('materia_estudiantes').insert(inserts);
@@ -93,7 +87,6 @@ const addEstudiantesToMateria = async (req, res) => {
   }
 };
 
-// Remover estudiante de una materia
 const removeEstudianteFromMateria = async (req, res) => {
   const { id, cedula } = req.params;
   try {
