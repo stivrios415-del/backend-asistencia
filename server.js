@@ -8,12 +8,10 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ✅ Rutas corregidas (sin 'src/')
 const estudiantesRoutes = require('./routes/estudiantes');
 const asistenciaRoutes = require('./routes/asistencia');
 const adminRoutes = require('./routes/admin');
-const materiasRoutes = require('./src/routes/materias');
-
+const materiasRoutes = require('./routes/materias'); // ✅ sin 'src/'
 
 app.use((req, res, next) => {
   console.log(`📢 [${new Date().toISOString()}] ${req.method} ${req.url}`);
@@ -32,8 +30,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use('/api/estudiantes', estudiantesRoutes);
 app.use('/api/asistencia', asistenciaRoutes);
 app.use('/api/admin', adminRoutes);
-app.use('/api/materias', materiasRoutes); 
-
+app.use('/api/materias', materiasRoutes);
 
 app.use((err, req, res, next) => {
   console.error('❌ Error:', err.message);
