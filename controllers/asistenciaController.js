@@ -88,7 +88,7 @@ const registrarAsistencia = async (req, res) => {
   });
 };
 
-// Obtener asistencia del día (con faltas en el mes)
+// Obtener asistencia del día (con faltas en el mes y nombre de la materia)
 const getAsistenciaHoy = async (req, res) => {
   const hoy = new Date().toISOString().split('T')[0];
   const añoActual = new Date().getFullYear();
@@ -100,7 +100,9 @@ const getAsistenciaHoy = async (req, res) => {
       id,
       fecha,
       hora,
-      estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
+      materia_id,
+      estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url),
+      materias (nombre)
     `)
     .eq('fecha', hoy);
   if (error) {
@@ -118,6 +120,7 @@ const getAsistenciaHoy = async (req, res) => {
       fecha: item.fecha,
       hora: item.hora,
       estudiante: item.estudiantes,
+      materia_nombre: item.materias?.nombre || 'Sin materia',
       faltasEnMes: faltas
     };
   }));
@@ -296,7 +299,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
       .eq('fecha', fecha);
 
     // Aplicar filtros opcionales de grado/sección sobre la materia (clase)
-    // Usamos filter para evitar problemas con la notación de punto
     if (grado) queryAsistencias = queryAsistencias.filter('materias.grado', 'eq', grado);
     if (seccion) queryAsistencias = queryAsistencias.filter('materias.seccion', 'eq', seccion);
 
@@ -357,7 +359,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
         titleRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9EAF7' } };
         currentRow++;
 
-        // Definir columnas después de agregar datos para poder ajustar ancho
         const headerRow = worksheet.addRow(['Cédula', 'Nombre', 'Apellido', 'Grado (Est.)', 'Sección (Est.)', 'Carrera', 'Hora de Escaneo']);
         headerRow.eachCell(cell => { cell.style = headerStyle; });
         currentRow++;
@@ -380,15 +381,14 @@ const exportarReporteCompletoExcel = async (req, res) => {
       }
     }
 
-    // Ajustar ancho de las columnas manualmente (por índice)
     worksheet.columns.forEach((col, idx) => {
-      if (idx === 0) col.width = 15;   // Cédula
-      else if (idx === 1) col.width = 20; // Nombre
-      else if (idx === 2) col.width = 20; // Apellido
-      else if (idx === 3) col.width = 12; // Grado Est.
-      else if (idx === 4) col.width = 12; // Sección Est.
-      else if (idx === 5) col.width = 20; // Carrera
-      else if (idx === 6) col.width = 15; // Hora
+      if (idx === 0) col.width = 15;
+      else if (idx === 1) col.width = 20;
+      else if (idx === 2) col.width = 20;
+      else if (idx === 3) col.width = 12;
+      else if (idx === 4) col.width = 12;
+      else if (idx === 5) col.width = 20;
+      else if (idx === 6) col.width = 15;
       else col.width = 15;
     });
 
@@ -470,7 +470,6 @@ const getEstadisticas = async (req, res) => {
       .order('apellido', { ascending: true });
 
     if (filtrosGradoCarrera.length > 0) {
-      // Construir condiciones or seguras: por cada par (grado, carrera) se genera una condición
       const conditions = filtrosGradoCarrera.map(f => `(grado.eq.${f.grado},carrera.eq.${f.carrera})`).join(',');
       queryEstudiantes = queryEstudiantes.or(conditions);
     }
