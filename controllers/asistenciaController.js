@@ -24,10 +24,10 @@ async function contarFaltasEnMes(cedula, año, mes) {
   return faltas > 0 ? faltas : 0;
 }
 
-// Registrar asistencia (por cédula escaneada) - AHORA CON materiaId
+// Registrar asistencia (por cédula escaneada) - CON materiaId
 const registrarAsistencia = async (req, res) => {
   console.log('📥 POST /api/asistencia - Body:', req.body);
-  const { cedula, materiaId } = req.body;   // <--- NUEVO: recibir materiaId
+  const { cedula, materiaId } = req.body;
 
   if (!cedula) {
     console.log('❌ Cédula no proporcionada');
@@ -59,13 +59,12 @@ const registrarAsistencia = async (req, res) => {
     .maybeSingle();
   if (yaRegistro) {
     console.log('⚠️ Estudiante ya registró asistencia hoy');
-    return res.status(400).json({ 
+    return res.status(400).json({
       error: 'Este estudiante ya registró asistencia hoy',
-      estudiante 
+      estudiante
     });
   }
   console.log(`📝 Insertando asistencia para ${cedula} en fecha ${hoy} hora ${ahora} con materia ${materiaId}`);
-  // <--- NUEVO: insertar también materia_id
   const { error: errAsistencia } = await supabase
     .from('asistencia')
     .insert([{ cedula, fecha: hoy, hora: ahora, materia_id: materiaId }]);
@@ -74,7 +73,7 @@ const registrarAsistencia = async (req, res) => {
     return res.status(500).json({ error: 'Error al registrar asistencia: ' + errAsistencia.message });
   }
   console.log('✅ Asistencia registrada exitosamente');
-  res.json({ 
+  res.json({
     message: 'Asistencia registrada exitosamente',
     estudiante: {
       cedula: estudiante.cedula,
@@ -285,7 +284,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
   }
   console.log(`📊 Exportando reporte completo - Fecha: ${fecha}, Usuario: ${usuario || 'anon'}, Nombre: ${nombreProfesor || 'No especificado'}, Grado: ${grado || 'todos'}, Sección: ${seccion || 'todas'}`);
   try {
-    // 1. Obtener todas las asistencias de la fecha, junto con la materia y los datos del estudiante
     let queryAsistencias = supabase
       .from('asistencia')
       .select(`
@@ -298,23 +296,21 @@ const exportarReporteCompletoExcel = async (req, res) => {
       .eq('fecha', fecha);
 
     // Aplicar filtros opcionales de grado/sección sobre la materia (clase)
-    if (grado) queryAsistencias = queryAsistencias.eq('materias.grado', grado);
-    if (seccion) queryAsistencias = queryAsistencias.eq('materias.seccion', seccion);
+    // Usamos filter para evitar problemas con la notación de punto
+    if (grado) queryAsistencias = queryAsistencias.filter('materias.grado', 'eq', grado);
+    if (seccion) queryAsistencias = queryAsistencias.filter('materias.seccion', 'eq', seccion);
 
     const { data: asistencias, error: errAsistencias } = await queryAsistencias;
     if (errAsistencias) throw errAsistencias;
 
-    // 2. Agrupar asistencias por materia (clase)
-    const grupos = new Map(); // key: materia_id, value: { materia, asistencias: [] }
+    // Agrupar asistencias por materia
+    const grupos = new Map();
     asistencias.forEach(asis => {
       const materia = asis.materias;
-      if (!materia) return; // Si por algún motivo no tiene materia, se ignora
+      if (!materia) return;
       const key = materia.id;
       if (!grupos.has(key)) {
-        grupos.set(key, {
-          materia: materia,
-          asistencias: []
-        });
+        grupos.set(key, { materia, asistencias: [] });
       }
       grupos.get(key).asistencias.push({
         estudiante: asis.estudiantes,
@@ -322,20 +318,18 @@ const exportarReporteCompletoExcel = async (req, res) => {
       });
     });
 
-    // 3. Crear el libro de Excel
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet(`Asistencia_${fecha}`);
     const headerStyle = { font: { bold: true }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF8FF' } } };
     let currentRow = 1;
 
-    // Fecha legible
     const fechaObj = new Date(fecha + 'T12:00:00');
-    const fechaLegible = fechaObj.toLocaleDateString('es-ES', { 
-      weekday: 'long', 
-      year: 'numeric', 
-      month: 'long', 
+    const fechaLegible = fechaObj.toLocaleDateString('es-ES', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
       day: 'numeric',
-      timeZone: 'America/Tegucigalpa' 
+      timeZone: 'America/Tegucigalpa'
     });
     worksheet.addRow([`Fecha: ${fechaLegible}`]).mergeCells(`A${currentRow}:H${currentRow}`);
     currentRow++;
@@ -346,11 +340,9 @@ const exportarReporteCompletoExcel = async (req, res) => {
     worksheet.addRow([]);
     currentRow++;
 
-    // Si no hay grupos, mostrar mensaje
     if (grupos.size === 0) {
       worksheet.addRow(['No se registraron asistencias en esta fecha para las clases seleccionadas.']);
     } else {
-      // Ordenar grupos por grado y sección
       const gruposOrdenados = Array.from(grupos.values()).sort((a, b) => {
         if (a.materia.grado !== b.materia.grado) return a.materia.grado.localeCompare(b.materia.grado);
         return a.materia.seccion.localeCompare(b.materia.seccion);
@@ -358,7 +350,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
 
       for (const grupo of gruposOrdenados) {
         const materia = grupo.materia;
-        // Título de la clase: muestra "Grado X - Sección Y - NombreMateria/Carrera"
         const tituloClase = `${materia.nombre || materia.carrera || 'Clase'} - Grado ${materia.grado}° Sección ${materia.seccion}`;
         const titleRow = worksheet.addRow([tituloClase]);
         worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
@@ -366,12 +357,11 @@ const exportarReporteCompletoExcel = async (req, res) => {
         titleRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9EAF7' } };
         currentRow++;
 
-        // Cabecera de la tabla
+        // Definir columnas después de agregar datos para poder ajustar ancho
         const headerRow = worksheet.addRow(['Cédula', 'Nombre', 'Apellido', 'Grado (Est.)', 'Sección (Est.)', 'Carrera', 'Hora de Escaneo']);
         headerRow.eachCell(cell => { cell.style = headerStyle; });
         currentRow++;
 
-        // Listar estudiantes que asistieron a esta clase
         for (const item of grupo.asistencias) {
           const est = item.estudiante;
           worksheet.addRow([
@@ -390,8 +380,17 @@ const exportarReporteCompletoExcel = async (req, res) => {
       }
     }
 
-    // Ajustar ancho de columnas
-    worksheet.columns.forEach(col => { col.width = 18; });
+    // Ajustar ancho de las columnas manualmente (por índice)
+    worksheet.columns.forEach((col, idx) => {
+      if (idx === 0) col.width = 15;   // Cédula
+      else if (idx === 1) col.width = 20; // Nombre
+      else if (idx === 2) col.width = 20; // Apellido
+      else if (idx === 3) col.width = 12; // Grado Est.
+      else if (idx === 4) col.width = 12; // Sección Est.
+      else if (idx === 5) col.width = 20; // Carrera
+      else if (idx === 6) col.width = 15; // Hora
+      else col.width = 15;
+    });
 
     const buffer = await workbook.xlsx.writeBuffer();
     const fileName = `reporte_completo_por_clase_${fecha}_${Date.now()}.xlsx`;
@@ -471,8 +470,9 @@ const getEstadisticas = async (req, res) => {
       .order('apellido', { ascending: true });
 
     if (filtrosGradoCarrera.length > 0) {
-      const orConditions = filtrosGradoCarrera.map(f => `and(grado.eq.${f.grado},carrera.eq.${f.carrera})`).join(',');
-      queryEstudiantes = queryEstudiantes.or(orConditions);
+      // Construir condiciones or seguras: por cada par (grado, carrera) se genera una condición
+      const conditions = filtrosGradoCarrera.map(f => `(grado.eq.${f.grado},carrera.eq.${f.carrera})`).join(',');
+      queryEstudiantes = queryEstudiantes.or(conditions);
     }
 
     const { data: estudiantes, error: errEst } = await queryEstudiantes;
@@ -578,8 +578,8 @@ const exportarEstadisticasExcel = async (req, res) => {
       .order('apellido', { ascending: true });
 
     if (filtrosGradoCarrera.length > 0) {
-      const orConditions = filtrosGradoCarrera.map(f => `and(grado.eq.${f.grado},carrera.eq.${f.carrera})`).join(',');
-      queryEstudiantes = queryEstudiantes.or(orConditions);
+      const conditions = filtrosGradoCarrera.map(f => `(grado.eq.${f.grado},carrera.eq.${f.carrera})`).join(',');
+      queryEstudiantes = queryEstudiantes.or(conditions);
     }
 
     const { data: estudiantes, error: errEst } = await queryEstudiantes;
