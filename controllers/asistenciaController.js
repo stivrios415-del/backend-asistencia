@@ -24,14 +24,20 @@ async function contarFaltasEnMes(cedula, año, mes) {
   return faltas > 0 ? faltas : 0;
 }
 
-// Registrar asistencia (por cédula escaneada)
+// Registrar asistencia (por cédula escaneada) - AHORA CON materiaId
 const registrarAsistencia = async (req, res) => {
   console.log('📥 POST /api/asistencia - Body:', req.body);
-  const { cedula } = req.body;
+  const { cedula, materiaId } = req.body;   // <--- NUEVO: recibir materiaId
+
   if (!cedula) {
     console.log('❌ Cédula no proporcionada');
     return res.status(400).json({ error: 'Cédula no proporcionada' });
   }
+  if (!materiaId) {
+    console.log('❌ Materia no especificada');
+    return res.status(400).json({ error: 'Debe especificar la materia/clase' });
+  }
+
   const hoy = new Date().toISOString().split('T')[0];
   const ahora = new Date().toLocaleTimeString('en-GB', { hour12: false });
   console.log(`🔍 Buscando estudiante con cédula: ${cedula}`);
@@ -58,10 +64,11 @@ const registrarAsistencia = async (req, res) => {
       estudiante 
     });
   }
-  console.log(`📝 Insertando asistencia para ${cedula} en fecha ${hoy} hora ${ahora}`);
+  console.log(`📝 Insertando asistencia para ${cedula} en fecha ${hoy} hora ${ahora} con materia ${materiaId}`);
+  // <--- NUEVO: insertar también materia_id
   const { error: errAsistencia } = await supabase
     .from('asistencia')
-    .insert([{ cedula, fecha: hoy, hora: ahora }]);
+    .insert([{ cedula, fecha: hoy, hora: ahora, materia_id: materiaId }]);
   if (errAsistencia) {
     console.log('❌ Error al insertar asistencia:', errAsistencia.message);
     return res.status(500).json({ error: 'Error al registrar asistencia: ' + errAsistencia.message });
@@ -270,7 +277,7 @@ const exportarReporteExcel = async (req, res) => {
   res.json({ success: true, url: archivo_url });
 };
 
-// Exportar reporte completo (todos los estudiantes, Presente/Ausente) con tablas separadas por grado/sección y mostrando el nombre del profesor
+// Exportar reporte completo (asistencias agrupadas por CLASE, mostrando grado/sección de la materia)
 const exportarReporteCompletoExcel = async (req, res) => {
   const { fecha, usuario, nombreProfesor, grado, seccion } = req.query;
   if (!fecha) {
@@ -278,35 +285,50 @@ const exportarReporteCompletoExcel = async (req, res) => {
   }
   console.log(`📊 Exportando reporte completo - Fecha: ${fecha}, Usuario: ${usuario || 'anon'}, Nombre: ${nombreProfesor || 'No especificado'}, Grado: ${grado || 'todos'}, Sección: ${seccion || 'todas'}`);
   try {
-    let query = supabase
-      .from('estudiantes')
-      .select('cedula, nombre, apellido, grado, seccion, carrera')
-      .order('grado', { ascending: true })
-      .order('seccion', { ascending: true })
-      .order('apellido', { ascending: true });
-    if (grado) query = query.eq('grado', grado);
-    if (seccion) query = query.eq('seccion', seccion);
-    const { data: estudiantes, error: errEstudiantes } = await query;
-    if (errEstudiantes) throw errEstudiantes;
-    const { data: asistencias, error: errAsistencias } = await supabase
+    // 1. Obtener todas las asistencias de la fecha, junto con la materia y los datos del estudiante
+    let queryAsistencias = supabase
       .from('asistencia')
-      .select('cedula, hora')
+      .select(`
+        cedula,
+        hora,
+        materia_id,
+        estudiantes (cedula, nombre, apellido, grado, seccion, carrera),
+        materias (id, grado, seccion, carrera, nombre)
+      `)
       .eq('fecha', fecha);
+
+    // Aplicar filtros opcionales de grado/sección sobre la materia (clase)
+    if (grado) queryAsistencias = queryAsistencias.eq('materias.grado', grado);
+    if (seccion) queryAsistencias = queryAsistencias.eq('materias.seccion', seccion);
+
+    const { data: asistencias, error: errAsistencias } = await queryAsistencias;
     if (errAsistencias) throw errAsistencias;
-    const asistenciaMap = new Map();
-    asistencias.forEach(a => asistenciaMap.set(a.cedula, a.hora));
-    const grupos = new Map();
-    estudiantes.forEach(est => {
-      const key = `${est.grado}|${est.seccion}`;
+
+    // 2. Agrupar asistencias por materia (clase)
+    const grupos = new Map(); // key: materia_id, value: { materia, asistencias: [] }
+    asistencias.forEach(asis => {
+      const materia = asis.materias;
+      if (!materia) return; // Si por algún motivo no tiene materia, se ignora
+      const key = materia.id;
       if (!grupos.has(key)) {
-        grupos.set(key, { grado: est.grado, seccion: est.seccion, estudantes: [] });
+        grupos.set(key, {
+          materia: materia,
+          asistencias: []
+        });
       }
-      grupos.get(key).estudiantes.push(est);
+      grupos.get(key).asistencias.push({
+        estudiante: asis.estudiantes,
+        hora: asis.hora
+      });
     });
+
+    // 3. Crear el libro de Excel
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet(`Asistencia_${fecha}`);
     const headerStyle = { font: { bold: true }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF8FF' } } };
     let currentRow = 1;
+
+    // Fecha legible
     const fechaObj = new Date(fecha + 'T12:00:00');
     const fechaLegible = fechaObj.toLocaleDateString('es-ES', { 
       weekday: 'long', 
@@ -315,56 +337,72 @@ const exportarReporteCompletoExcel = async (req, res) => {
       day: 'numeric',
       timeZone: 'America/Tegucigalpa' 
     });
-    const fechaRow = worksheet.addRow([`Fecha: ${fechaLegible}`]);
-    worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
+    worksheet.addRow([`Fecha: ${fechaLegible}`]).mergeCells(`A${currentRow}:H${currentRow}`);
     currentRow++;
     if (nombreProfesor) {
-      const profRow = worksheet.addRow([`Generado por: ${nombreProfesor}`]);
-      worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
+      worksheet.addRow([`Generado por: ${nombreProfesor}`]).mergeCells(`A${currentRow}:H${currentRow}`);
       currentRow++;
     }
     worksheet.addRow([]);
     currentRow++;
-    const gruposOrdenados = Array.from(grupos.values()).sort((a, b) => {
-      if (a.grado !== b.grado) return a.grado.localeCompare(b.grado);
-      return a.seccion.localeCompare(b.seccion);
-    });
-    for (const grupo of gruposOrdenados) {
-      const titleRow = worksheet.addRow([`Grado ${grupo.grado} - Sección ${grupo.seccion}`]);
-      worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
-      titleRow.font = { bold: true, size: 12 };
-      titleRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9EAF7' } };
-      currentRow++;
-      const headerRow = worksheet.addRow(['Cédula', 'Nombre', 'Apellido', 'Grado', 'Sección', 'Carrera', 'Estado', 'Hora de Escaneo']);
-      headerRow.eachCell(cell => { cell.style = headerStyle; });
-      currentRow++;
-      for (const est of grupo.estudiantes) {
-        const hora = asistenciaMap.get(est.cedula);
-        const presente = !!hora;
-        worksheet.addRow([
-          est.cedula,
-          est.nombre,
-          est.apellido,
-          est.grado,
-          est.seccion,
-          est.carrera || '',
-          presente ? 'PRESENTE' : 'AUSENTE',
-          hora || ''
-        ]);
+
+    // Si no hay grupos, mostrar mensaje
+    if (grupos.size === 0) {
+      worksheet.addRow(['No se registraron asistencias en esta fecha para las clases seleccionadas.']);
+    } else {
+      // Ordenar grupos por grado y sección
+      const gruposOrdenados = Array.from(grupos.values()).sort((a, b) => {
+        if (a.materia.grado !== b.materia.grado) return a.materia.grado.localeCompare(b.materia.grado);
+        return a.materia.seccion.localeCompare(b.materia.seccion);
+      });
+
+      for (const grupo of gruposOrdenados) {
+        const materia = grupo.materia;
+        // Título de la clase: muestra "Grado X - Sección Y - NombreMateria/Carrera"
+        const tituloClase = `${materia.nombre || materia.carrera || 'Clase'} - Grado ${materia.grado}° Sección ${materia.seccion}`;
+        const titleRow = worksheet.addRow([tituloClase]);
+        worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
+        titleRow.font = { bold: true, size: 12 };
+        titleRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9EAF7' } };
+        currentRow++;
+
+        // Cabecera de la tabla
+        const headerRow = worksheet.addRow(['Cédula', 'Nombre', 'Apellido', 'Grado (Est.)', 'Sección (Est.)', 'Carrera', 'Hora de Escaneo']);
+        headerRow.eachCell(cell => { cell.style = headerStyle; });
+        currentRow++;
+
+        // Listar estudiantes que asistieron a esta clase
+        for (const item of grupo.asistencias) {
+          const est = item.estudiante;
+          worksheet.addRow([
+            est?.cedula || '',
+            est?.nombre || '',
+            est?.apellido || '',
+            est?.grado || '',
+            est?.seccion || '',
+            est?.carrera || '',
+            item.hora || ''
+          ]);
+          currentRow++;
+        }
+        worksheet.addRow([]);
         currentRow++;
       }
-      worksheet.addRow([]);
-      currentRow++;
     }
-    worksheet.columns.forEach(col => { col.width = 15; });
+
+    // Ajustar ancho de columnas
+    worksheet.columns.forEach(col => { col.width = 18; });
+
     const buffer = await workbook.xlsx.writeBuffer();
-    const fileName = `reporte_completo${grado ? `_${grado}` : ''}${seccion ? `_sec${seccion}` : ''}_${fecha}_${Date.now()}.xlsx`;
+    const fileName = `reporte_completo_por_clase_${fecha}_${Date.now()}.xlsx`;
     const { data: uploadData, error: uploadError } = await supabase.storage
       .from('reportes')
       .upload(fileName, buffer, { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     if (uploadError) throw uploadError;
+
     const { data: urlData } = supabase.storage.from('reportes').getPublicUrl(fileName);
     const archivo_url = urlData.publicUrl;
+
     try {
       await supabase.from('reportes_generados').insert([{
         fecha_inicio: fecha,
@@ -377,9 +415,10 @@ const exportarReporteCompletoExcel = async (req, res) => {
     } catch (metaErr) {
       console.warn('⚠️ No se pudo guardar metadata', metaErr.message);
     }
+
     res.json({ success: true, url: archivo_url });
   } catch (error) {
-    console.error('❌ Error en reporte completo:', error);
+    console.error('❌ Error en reporte completo por clase:', error);
     res.status(500).json({ error: error.message });
   }
 };
