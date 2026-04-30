@@ -5,12 +5,13 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 
-// ✅ Rutas corregidas: sin 'src/'
-const estudiantesRoutes = require('./routes/estudiantes');
-const asistenciaRoutes = require('./routes/asistencia');
-
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// ✅ Importar rutas después de crear app
+const estudiantesRoutes = require('./src/routes/estudiantes');
+const asistenciaRoutes = require('./src/routes/asistencia');
+const adminRoutes = require('./src/routes/admin');
 
 // Middleware de logging
 app.use((req, res, next) => {
@@ -34,6 +35,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Rutas de la API
 app.use('/api/estudiantes', estudiantesRoutes);
 app.use('/api/asistencia', asistenciaRoutes);
+app.use('/api/admin', adminRoutes);   // Ruta del panel de administrador
 
 // Manejo de errores global
 app.use((err, req, res, next) => {
