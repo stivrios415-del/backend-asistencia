@@ -3,7 +3,6 @@ const router = express.Router();
 const materiaController = require('../controllers/materiaController');
 const { verificarProfesor } = require('../middleware/auth');
 
-// Todas las rutas requieren autenticación y rol de profesor
 router.use(verificarProfesor);
 
 router.get('/', materiaController.getMaterias);
