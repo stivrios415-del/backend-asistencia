@@ -94,7 +94,7 @@ const getAsistenciaHoy = async (req, res) => {
       id,
       fecha,
       hora,
-      estudantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
+      estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
     `)
     .eq('fecha', hoy);
   if (error) {
@@ -102,7 +102,7 @@ const getAsistenciaHoy = async (req, res) => {
     return res.status(400).json({ error: error.message });
   }
   const asistenciaConFaltas = await Promise.all(data.map(async (item) => {
-    const cedula = item.estudantes?.cedula;
+    const cedula = item.estudiantes?.cedula;
     let faltas = 0;
     if (cedula) {
       faltas = await contarFaltasEnMes(cedula, añoActual, mesActual);
@@ -111,7 +111,7 @@ const getAsistenciaHoy = async (req, res) => {
       id: item.id,
       fecha: item.fecha,
       hora: item.hora,
-      estudiante: item.estudantes,
+      estudiante: item.estudiantes,
       faltasEnMes: faltas
     };
   }));
@@ -129,7 +129,7 @@ const getAsistenciaByFecha = async (req, res) => {
       id,
       fecha,
       hora,
-      estudantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
+      estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
     `)
     .eq('fecha', fecha);
   if (error) {
@@ -150,7 +150,7 @@ const getAsistenciaPorGrado = async (req, res) => {
       id,
       fecha,
       hora,
-      estudantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
+      estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
     `)
     .eq('fecha', fechaFiltro);
   if (error) {
@@ -158,8 +158,8 @@ const getAsistenciaPorGrado = async (req, res) => {
     return res.status(400).json({ error: error.message });
   }
   let filtrados = data;
-  if (grado) filtrados = filtrados.filter(a => a.estudantes?.grado === grado);
-  if (seccion) filtrados = filtrados.filter(a => a.estudantes?.seccion === seccion);
+  if (grado) filtrados = filtrados.filter(a => a.estudiantes?.grado === grado);
+  if (seccion) filtrados = filtrados.filter(a => a.estudiantes?.seccion === seccion);
   console.log(`✅ Filtrados: ${filtrados.length} registros`);
   res.json(filtrados);
 };
@@ -190,7 +190,7 @@ const getReporteAsistencia = async (req, res) => {
       id,
       fecha,
       hora,
-      estudantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
+      estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
     `);
   if (fechaInicio && fechaFin) {
     query = query.gte('fecha', fechaInicio).lte('fecha', fechaFin);
@@ -220,7 +220,7 @@ const exportarReporteExcel = async (req, res) => {
       id,
       fecha,
       hora,
-      estudantes (cedula, nombre, apellido, grado, seccion)
+      estudiantes (cedula, nombre, apellido, grado, seccion)
     `);
   query = query.gte('fecha', fechaInicio).lte('fecha', fechaFin);
   const { data, error } = await query.order('fecha', { ascending: false });
@@ -243,11 +243,11 @@ const exportarReporteExcel = async (req, res) => {
     worksheet.addRow({
       fecha: item.fecha,
       hora: item.hora,
-      cedula: item.estudantes?.cedula || '',
-      nombre: item.estudantes?.nombre || '',
-      apellido: item.estudantes?.apellido || '',
-      grado: item.estudantes?.grado || '',
-      seccion: item.estudantes?.seccion || '',
+      cedula: item.estudiantes?.cedula || '',
+      nombre: item.estudiantes?.nombre || '',
+      apellido: item.estudiantes?.apellido || '',
+      grado: item.estudiantes?.grado || '',
+      seccion: item.estudiantes?.seccion || '',
     });
   });
   const buffer = await workbook.xlsx.writeBuffer();
@@ -299,7 +299,7 @@ const exportarReporteCompletoExcel = async (req, res) => {
     estudiantes.forEach(est => {
       const key = `${est.grado}|${est.seccion}`;
       if (!grupos.has(key)) {
-        grupos.set(key, { grado: est.grado, seccion: est.seccion, estudiantes: [] });
+        grupos.set(key, { grado: est.grado, seccion: est.seccion, estudantes: [] });
       }
       grupos.get(key).estudiantes.push(est);
     });
@@ -408,7 +408,6 @@ const getEstadisticas = async (req, res) => {
       fin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).toISOString().split('T')[0];
     }
 
-    // Obtener las combinaciones (grado, carrera) que imparte el profesor
     let filtrosGradoCarrera = [];
     if (profesorEmail) {
       const { data: profesor, error: errProf } = await supabase
@@ -427,7 +426,6 @@ const getEstadisticas = async (req, res) => {
       }
     }
 
-    // Construir consulta de estudiantes con filtro de asignaciones
     let queryEstudiantes = supabase
       .from('estudiantes')
       .select('cedula, nombre, apellido, grado, seccion, carrera')
@@ -441,7 +439,6 @@ const getEstadisticas = async (req, res) => {
     const { data: estudiantes, error: errEst } = await queryEstudiantes;
     if (errEst) throw errEst;
 
-    // Obtener asistencias en el rango
     const { data: asistencias, error: errAsis } = await supabase
       .from('asistencia')
       .select('cedula, fecha')
@@ -462,12 +459,7 @@ const getEstadisticas = async (req, res) => {
       const asistencias = asistenciaCount[est.cedula] || 0;
       const faltas = totalDias - asistencias;
       return {
-        cedula: est.cedula,
-        nombre: est.nombre,
-        apellido: est.apellido,
-        grado: est.grado,
-        seccion: est.seccion,
-        carrera: est.carrera || 'Sin carrera',
+        ...est,
         asistencias,
         faltas: faltas > 0 ? faltas : 0,
         totalDias
@@ -477,14 +469,13 @@ const getEstadisticas = async (req, res) => {
     const masFaltas = [...estadisticas].sort((a, b) => b.faltas - a.faltas).slice(0, 10);
     const mejorRecord = [...estadisticas].sort((a, b) => b.asistencias - a.asistencias).slice(0, 10);
 
-    // Resumen por grado y carrera (solo asignaciones)
     const resumenGradoCarrera = {};
     estadisticas.forEach(est => {
-      const key = `${est.grado}|${est.carrera}`;
+      const key = `${est.grado}|${est.carrera || 'Sin carrera'}`;
       if (!resumenGradoCarrera[key]) {
         resumenGradoCarrera[key] = {
           grado: est.grado,
-          carrera: est.carrera,
+          carrera: est.carrera || 'Sin carrera',
           totalAsistencias: 0,
           totalEstudiantes: 0
         };
@@ -524,7 +515,6 @@ const exportarEstadisticasExcel = async (req, res) => {
       fin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).toISOString().split('T')[0];
     }
 
-    // Obtener asignaciones del profesor
     let filtrosGradoCarrera = [];
     if (profesorEmail) {
       const { data: profesor, error: errProf } = await supabase
@@ -543,7 +533,6 @@ const exportarEstadisticasExcel = async (req, res) => {
       }
     }
 
-    // Consultar estudiantes con filtro
     let queryEstudiantes = supabase
       .from('estudiantes')
       .select('cedula, nombre, apellido, grado, seccion, carrera')
@@ -557,7 +546,6 @@ const exportarEstadisticasExcel = async (req, res) => {
     const { data: estudiantes, error: errEst } = await queryEstudiantes;
     if (errEst) throw errEst;
 
-    // Asistencias en el rango
     const { data: asistencias, error: errAsis } = await supabase
       .from('asistencia')
       .select('cedula, fecha')
@@ -578,12 +566,7 @@ const exportarEstadisticasExcel = async (req, res) => {
       const asistencias = asistenciaCount[est.cedula] || 0;
       const faltas = totalDias - asistencias;
       return {
-        cedula: est.cedula,
-        nombre: est.nombre,
-        apellido: est.apellido,
-        grado: est.grado,
-        seccion: est.seccion,
-        carrera: est.carrera || 'Sin carrera',
+        ...est,
         asistencias,
         faltas: faltas > 0 ? faltas : 0,
         totalDias
@@ -593,14 +576,13 @@ const exportarEstadisticasExcel = async (req, res) => {
     const masFaltas = [...estadisticas].sort((a, b) => b.faltas - a.faltas).slice(0, 10);
     const mejorRecord = [...estadisticas].sort((a, b) => b.asistencias - a.asistencias).slice(0, 10);
 
-    // Resumen por grado y carrera
     const resumenGradoCarrera = {};
     estadisticas.forEach(est => {
-      const key = `${est.grado}|${est.carrera}`;
+      const key = `${est.grado}|${est.carrera || 'Sin carrera'}`;
       if (!resumenGradoCarrera[key]) {
         resumenGradoCarrera[key] = {
           grado: est.grado,
-          carrera: est.carrera,
+          carrera: est.carrera || 'Sin carrera',
           totalAsistencias: 0,
           totalEstudiantes: 0
         };
@@ -622,7 +604,6 @@ const exportarEstadisticasExcel = async (req, res) => {
     const workbook = new ExcelJS.Workbook();
     const headerStyle = { font: { bold: true }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF8FF' } } };
 
-    // Hoja 1: Más faltas
     const wsFaltas = workbook.addWorksheet('Más faltas');
     wsFaltas.columns = [
       { header: 'Cédula', key: 'cedula', width: 15 },
@@ -638,13 +619,11 @@ const exportarEstadisticasExcel = async (req, res) => {
     wsFaltas.getRow(1).eachCell(cell => cell.style = headerStyle);
     masFaltas.forEach(est => wsFaltas.addRow(est));
 
-    // Hoja 2: Mejor récord
     const wsRecord = workbook.addWorksheet('Mejor récord');
     wsRecord.columns = wsFaltas.columns;
     wsRecord.getRow(1).eachCell(cell => cell.style = headerStyle);
     mejorRecord.forEach(est => wsRecord.addRow(est));
 
-    // Hoja 3: Resumen por grado y carrera
     const wsResumen = workbook.addWorksheet('Resumen por grado y carrera');
     wsResumen.columns = [
       { header: 'Grado', key: 'grado', width: 8 },
