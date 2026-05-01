@@ -24,7 +24,7 @@ async function contarFaltasEnMes(cedula, año, mes) {
   return faltas > 0 ? faltas : 0;
 }
 
-// Registrar asistencia (por cédula escaneada) - CON materiaId
+// Registrar asistencia (con validación de grado y carrera)
 const registrarAsistencia = async (req, res) => {
   console.log('📥 POST /api/asistencia - Body:', req.body);
   const { cedula, materiaId } = req.body;
@@ -38,25 +38,52 @@ const registrarAsistencia = async (req, res) => {
     return res.status(400).json({ error: 'Debe especificar la materia/clase' });
   }
 
-  const hoy = new Date().toISOString().split('T')[0];
-  const ahora = new Date().toLocaleTimeString('en-GB', { hour12: false });
-  console.log(`🔍 Buscando estudiante con cédula: ${cedula}`);
+  // 1. Obtener datos de la materia (grado, carrera)
+  const { data: materia, error: errMateria } = await supabase
+    .from('materias')
+    .select('grado, carrera')
+    .eq('id', materiaId)
+    .single();
+
+  if (errMateria || !materia) {
+    console.log('❌ Materia no encontrada');
+    return res.status(404).json({ error: 'La clase seleccionada no existe' });
+  }
+
+  // 2. Obtener datos del estudiante
   const { data: estudiante, error: errEstudiante } = await supabase
     .from('estudiantes')
     .select('cedula, nombre, apellido, grado, seccion, carrera, foto_url')
     .eq('cedula', cedula)
     .single();
+
   if (errEstudiante || !estudiante) {
     console.log('❌ Estudiante no encontrado');
     return res.status(404).json({ error: 'Estudiante no encontrado' });
   }
+
   console.log('✅ Estudiante encontrado:', estudiante);
+  console.log('📚 Materia requerida: grado', materia.grado, 'carrera', materia.carrera);
+
+  // 3. Validar que el estudiante pertenezca a la misma área (grado y carrera)
+  if (estudiante.grado !== materia.grado || estudiante.carrera !== materia.carrera) {
+    console.log(`❌ Estudiante ${cedula} no pertenece a la clase. Esperado: grado ${materia.grado} carrera ${materia.carrera}. Real: grado ${estudiante.grado} carrera ${estudiante.carrera}`);
+    return res.status(400).json({
+      error: `Este estudiante no pertenece a esta clase. Solo se permite para grado ${materia.grado} - ${materia.carrera}.`
+    });
+  }
+
+  const hoy = new Date().toISOString().split('T')[0];
+  const ahora = new Date().toLocaleTimeString('en-GB', { hour12: false });
+
+  // 4. Verificar si ya registró asistencia hoy
   const { data: yaRegistro, error: errYaRegistro } = await supabase
     .from('asistencia')
     .select('id')
     .eq('cedula', cedula)
     .eq('fecha', hoy)
     .maybeSingle();
+
   if (yaRegistro) {
     console.log('⚠️ Estudiante ya registró asistencia hoy');
     return res.status(400).json({
@@ -64,14 +91,18 @@ const registrarAsistencia = async (req, res) => {
       estudiante
     });
   }
+
+  // 5. Insertar asistencia
   console.log(`📝 Insertando asistencia para ${cedula} en fecha ${hoy} hora ${ahora} con materia ${materiaId}`);
   const { error: errAsistencia } = await supabase
     .from('asistencia')
     .insert([{ cedula, fecha: hoy, hora: ahora, materia_id: materiaId }]);
+
   if (errAsistencia) {
     console.log('❌ Error al insertar asistencia:', errAsistencia.message);
     return res.status(500).json({ error: 'Error al registrar asistencia: ' + errAsistencia.message });
   }
+
   console.log('✅ Asistencia registrada exitosamente');
   res.json({
     message: 'Asistencia registrada exitosamente',
@@ -93,7 +124,7 @@ const getAsistenciaHoy = async (req, res) => {
   const hoy = new Date().toISOString().split('T')[0];
   const añoActual = new Date().getFullYear();
   const mesActual = new Date().getMonth() + 1;
-  const { profesorEmail } = req.query;  // Recibir el email del profesor
+  const { profesorEmail } = req.query;
 
   if (!profesorEmail) {
     console.log('❌ No se proporcionó email del profesor');
@@ -102,7 +133,6 @@ const getAsistenciaHoy = async (req, res) => {
 
   console.log(`📋 Obteniendo asistencia del día: ${hoy} para profesor: ${profesorEmail}`);
 
-  // 1. Obtener el ID del profesor desde su email
   const { data: profesor, error: errProf } = await supabase
     .from('profesores')
     .select('id')
@@ -114,7 +144,6 @@ const getAsistenciaHoy = async (req, res) => {
     return res.status(404).json({ error: 'Profesor no encontrado' });
   }
 
-  // 2. Obtener las materias asignadas a ese profesor
   const { data: materias, error: errMats } = await supabase
     .from('materias')
     .select('id')
@@ -128,7 +157,6 @@ const getAsistenciaHoy = async (req, res) => {
   const idsMaterias = materias.map(m => m.id);
   console.log(`📚 Materias del profesor: ${idsMaterias.join(', ')}`);
 
-  // 3. Obtener asistencias de esas materias en la fecha actual
   const { data, error } = await supabase
     .from('asistencia')
     .select(`
@@ -212,7 +240,7 @@ const getAsistenciaPorGrado = async (req, res) => {
   res.json(filtrados);
 };
 
-// Limpiar toda la asistencia del día (OPCIONAL: filtrar también por profesor si se requiere)
+// Limpiar toda la asistencia del día
 const limpiarAsistenciaHoy = async (req, res) => {
   const hoy = new Date().toISOString().split('T')[0];
   console.log(`🗑️ Limpiando asistencia del día: ${hoy}`);
@@ -337,14 +365,12 @@ const exportarReporteCompletoExcel = async (req, res) => {
       `)
       .eq('fecha', fecha);
 
-    // Aplicar filtros opcionales de grado/sección sobre la materia (clase)
     if (grado) queryAsistencias = queryAsistencias.filter('materias.grado', 'eq', grado);
     if (seccion) queryAsistencias = queryAsistencias.filter('materias.seccion', 'eq', seccion);
 
     const { data: asistencias, error: errAsistencias } = await queryAsistencias;
     if (errAsistencias) throw errAsistencias;
 
-    // Agrupar asistencias por materia
     const grupos = new Map();
     asistencias.forEach(asis => {
       const materia = asis.materias;
