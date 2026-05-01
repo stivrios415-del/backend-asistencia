@@ -88,12 +88,47 @@ const registrarAsistencia = async (req, res) => {
   });
 };
 
-// Obtener asistencia del día (con faltas en el mes y nombre de la materia)
+// Obtener asistencia del día (FILTRADA POR PROFESOR)
 const getAsistenciaHoy = async (req, res) => {
   const hoy = new Date().toISOString().split('T')[0];
   const añoActual = new Date().getFullYear();
   const mesActual = new Date().getMonth() + 1;
-  console.log(`📋 Obteniendo asistencia del día: ${hoy}`);
+  const { profesorEmail } = req.query;  // Recibir el email del profesor
+
+  if (!profesorEmail) {
+    console.log('❌ No se proporcionó email del profesor');
+    return res.status(400).json({ error: 'Se necesita el email del profesor' });
+  }
+
+  console.log(`📋 Obteniendo asistencia del día: ${hoy} para profesor: ${profesorEmail}`);
+
+  // 1. Obtener el ID del profesor desde su email
+  const { data: profesor, error: errProf } = await supabase
+    .from('profesores')
+    .select('id')
+    .eq('email', profesorEmail)
+    .single();
+
+  if (errProf || !profesor) {
+    console.log('❌ Profesor no encontrado');
+    return res.status(404).json({ error: 'Profesor no encontrado' });
+  }
+
+  // 2. Obtener las materias asignadas a ese profesor
+  const { data: materias, error: errMats } = await supabase
+    .from('materias')
+    .select('id')
+    .eq('profesor_id', profesor.id);
+
+  if (errMats || !materias || materias.length === 0) {
+    console.log('⚠️ El profesor no tiene materias asignadas');
+    return res.json([]);
+  }
+
+  const idsMaterias = materias.map(m => m.id);
+  console.log(`📚 Materias del profesor: ${idsMaterias.join(', ')}`);
+
+  // 3. Obtener asistencias de esas materias en la fecha actual
   const { data, error } = await supabase
     .from('asistencia')
     .select(`
@@ -104,11 +139,14 @@ const getAsistenciaHoy = async (req, res) => {
       estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url),
       materias (nombre)
     `)
-    .eq('fecha', hoy);
+    .eq('fecha', hoy)
+    .in('materia_id', idsMaterias);
+
   if (error) {
     console.log('❌ Error al obtener asistencia:', error.message);
     return res.status(400).json({ error: error.message });
   }
+
   const asistenciaConFaltas = await Promise.all(data.map(async (item) => {
     const cedula = item.estudiantes?.cedula;
     let faltas = 0;
@@ -124,7 +162,8 @@ const getAsistenciaHoy = async (req, res) => {
       faltasEnMes: faltas
     };
   }));
-  console.log(`✅ Encontrados ${asistenciaConFaltas.length} registros`);
+
+  console.log(`✅ Encontrados ${asistenciaConFaltas.length} registros para el profesor`);
   res.json(asistenciaConFaltas);
 };
 
@@ -173,7 +212,7 @@ const getAsistenciaPorGrado = async (req, res) => {
   res.json(filtrados);
 };
 
-// Limpiar toda la asistencia del día
+// Limpiar toda la asistencia del día (OPCIONAL: filtrar también por profesor si se requiere)
 const limpiarAsistenciaHoy = async (req, res) => {
   const hoy = new Date().toISOString().split('T')[0];
   console.log(`🗑️ Limpiando asistencia del día: ${hoy}`);
