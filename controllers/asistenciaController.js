@@ -271,7 +271,7 @@ const limpiarAsistenciaHoy = async (req, res) => {
   res.json({ message: 'Asistencia del día limpiada' });
 };
 
-// Reporte por rango de fechas (JSON)
+// ========== REPORTE POR RANGO DE FECHAS (JSON) - INCLUYE MATERIA ==========
 const getReporteAsistencia = async (req, res) => {
   const { fechaInicio, fechaFin } = req.query;
   console.log(`📊 Reporte JSON - Desde: ${fechaInicio}, Hasta: ${fechaFin}`);
@@ -281,7 +281,9 @@ const getReporteAsistencia = async (req, res) => {
       id,
       fecha,
       hora,
-      estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
+      materia_id,
+      estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url),
+      materias (nombre)
     `);
   if (fechaInicio && fechaFin) {
     query = query.gte('fecha', fechaInicio).lte('fecha', fechaFin);
@@ -295,7 +297,12 @@ const getReporteAsistencia = async (req, res) => {
     console.log('❌ Error en reporte:', error.message);
     return res.status(400).json({ error: error.message });
   }
-  res.json(data);
+  // Agregar materia_nombre a cada registro
+  const resultados = data.map(item => ({
+    ...item,
+    materia_nombre: item.materias?.nombre || 'Sin materia'
+  }));
+  res.json(resultados);
 };
 
 // Exportar a Excel (solo estudiantes con asistencia, rango de fechas)
