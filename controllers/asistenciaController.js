@@ -1,6 +1,16 @@
 const supabase = require('../config/supabase');
 const ExcelJS = require('exceljs');
 
+// ========== FUNCIÓN AUXILIAR PARA NORMALIZAR TEXTO (sin acentos, minúsculas) ==========
+function normalizarTexto(str) {
+  if (!str) return '';
+  return str
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+}
+
 // ========== FUNCIÓN AUXILIAR PARA CONTAR FALTAS EN EL MES ==========
 async function contarFaltasEnMes(cedula, año, mes) {
   const primerDia = new Date(año, mes - 1, 1).toISOString().split('T')[0];
@@ -24,7 +34,7 @@ async function contarFaltasEnMes(cedula, año, mes) {
   return faltas > 0 ? faltas : 0;
 }
 
-// Registrar asistencia (con validación de grado y carrera)
+// Registrar asistencia (con validación normalizada)
 const registrarAsistencia = async (req, res) => {
   console.log('📥 POST /api/asistencia - Body:', req.body);
   const { cedula, materiaId } = req.body;
@@ -65,9 +75,14 @@ const registrarAsistencia = async (req, res) => {
   console.log('✅ Estudiante encontrado:', estudiante);
   console.log('📚 Materia requerida: grado', materia.grado, 'carrera', materia.carrera);
 
-  // 3. Validar que el estudiante pertenezca a la misma área (grado y carrera)
-  if (estudiante.grado !== materia.grado || estudiante.carrera !== materia.carrera) {
-    console.log(`❌ Estudiante ${cedula} no pertenece a la clase. Esperado: grado ${materia.grado} carrera ${materia.carrera}. Real: grado ${estudiante.grado} carrera ${estudiante.carrera}`);
+  // 3. Validar normalizada (sin acentos, minúsculas)
+  const gradoMateria = normalizarTexto(materia.grado);
+  const carreraMateria = normalizarTexto(materia.carrera);
+  const gradoEstudiante = normalizarTexto(estudiante.grado);
+  const carreraEstudiante = normalizarTexto(estudiante.carrera);
+
+  if (gradoEstudiante !== gradoMateria || carreraEstudiante !== carreraMateria) {
+    console.log(`❌ Validación fallida. Materia: (${gradoMateria}, ${carreraMateria}) vs Estudiante: (${gradoEstudiante}, ${carreraEstudiante})`);
     return res.status(400).json({
       error: `Este estudiante no pertenece a esta clase. Solo se permite para grado ${materia.grado} - ${materia.carrera}.`
     });
