@@ -295,9 +295,8 @@ const getReporteAsistencia = async (req, res) => {
     query = query.lte('fecha', fechaFin);
   }
 
-  // Filtrar por profesor si se proporciona y no es "all"
-  if (profesorEmail && profesorEmail !== 'all') {
-    // Obtener ID del profesor y sus materias
+  // Filtrar por profesor si se proporciona un email válido y no es "all" o vacío
+  if (profesorEmail && profesorEmail !== 'all' && profesorEmail !== '') {
     const { data: profesor, error: errProf } = await supabase
       .from('profesores')
       .select('id')
@@ -312,7 +311,6 @@ const getReporteAsistencia = async (req, res) => {
         const idsMaterias = materias.map(m => m.id);
         query = query.in('materia_id', idsMaterias);
       } else {
-        // Si no tiene materias, devolver vacío
         return res.json([]);
       }
     } else {
@@ -415,38 +413,49 @@ const exportarReporteCompletoExcel = async (req, res) => {
       `)
       .eq('fecha', fecha);
 
-    // Filtrar por profesor si se proporciona y no es "all"
-    if (profesorEmail && profesorEmail !== 'all') {
+    // CORRECCIÓN: solo aplicar filtro de profesor si profesorEmail existe y no es "all" ni cadena vacía
+    const filtrarPorProfesor = profesorEmail && profesorEmail !== 'all' && profesorEmail !== '';
+    if (filtrarPorProfesor) {
       const { data: profesor, error: errProf } = await supabase
         .from('profesores')
         .select('id')
         .eq('email', profesorEmail)
         .single();
-      if (!errProf && profesor) {
-        const { data: materias, error: errMat } = await supabase
-          .from('materias')
-          .select('id')
-          .eq('profesor_id', profesor.id);
-        if (!errMat && materias && materias.length > 0) {
-          const idsMaterias = materias.map(m => m.id);
-          queryAsistencias = queryAsistencias.in('materia_id', idsMaterias);
-        } else {
-          // No hay materias para este profesor, devolver Excel vacío o mensaje
-          const workbook = new ExcelJS.Workbook();
-          const worksheet = workbook.addWorksheet(`Asistencia_${fecha}`);
-          worksheet.addRow(['No se encontraron asistencias para este profesor en la fecha indicada.']);
-          const buffer = await workbook.xlsx.writeBuffer();
-          const fileName = `reporte_completo_vacio_${fecha}_${Date.now()}.xlsx`;
-          const { data: uploadData, error: uploadError } = await supabase.storage
-            .from('reportes')
-            .upload(fileName, buffer, { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-          if (uploadError) throw uploadError;
-          const { data: urlData } = supabase.storage.from('reportes').getPublicUrl(fileName);
-          return res.json({ success: true, url: urlData.publicUrl });
-        }
-      } else {
-        return res.status(404).json({ error: 'Profesor no encontrado' });
+      if (errProf || !profesor) {
+        console.error('❌ Profesor no encontrado:', profesorEmail);
+        // Devolver Excel vacío con mensaje
+        const workbook = new ExcelJS.Workbook();
+        const worksheet = workbook.addWorksheet(`Asistencia_${fecha}`);
+        worksheet.addRow([`Error: No se encontró al profesor con email ${profesorEmail}`]);
+        const buffer = await workbook.xlsx.writeBuffer();
+        const fileName = `reporte_completo_error_${fecha}_${Date.now()}.xlsx`;
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from('reportes')
+          .upload(fileName, buffer, { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        if (uploadError) throw uploadError;
+        const { data: urlData } = supabase.storage.from('reportes').getPublicUrl(fileName);
+        return res.json({ success: true, url: urlData.publicUrl });
       }
+      const { data: materias, error: errMat } = await supabase
+        .from('materias')
+        .select('id')
+        .eq('profesor_id', profesor.id);
+      if (errMat || !materias || materias.length === 0) {
+        // No tiene materias, devolver Excel vacío
+        const workbook = new ExcelJS.Workbook();
+        const worksheet = workbook.addWorksheet(`Asistencia_${fecha}`);
+        worksheet.addRow(['No se encontraron asistencias para este profesor en la fecha indicada.']);
+        const buffer = await workbook.xlsx.writeBuffer();
+        const fileName = `reporte_completo_vacio_${fecha}_${Date.now()}.xlsx`;
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from('reportes')
+          .upload(fileName, buffer, { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        if (uploadError) throw uploadError;
+        const { data: urlData } = supabase.storage.from('reportes').getPublicUrl(fileName);
+        return res.json({ success: true, url: urlData.publicUrl });
+      }
+      const idsMaterias = materias.map(m => m.id);
+      queryAsistencias = queryAsistencias.in('materia_id', idsMaterias);
     }
 
     if (grado) queryAsistencias = queryAsistencias.filter('materias.grado', 'eq', grado);
