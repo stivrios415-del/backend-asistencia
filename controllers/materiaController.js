@@ -1,12 +1,27 @@
 const supabase = require('../config/supabase');
 
+// Función auxiliar para verificar si el usuario autenticado es administrador
+async function esAdmin(userId) {
+  const { data, error } = await supabase
+    .from('profesores')
+    .select('rol')
+    .eq('id', userId)
+    .single();
+  if (error) return false;
+  return data?.rol === 'admin';
+}
+
+// Obtener materias (todas si es admin, solo las suyas si es profesor)
 const getMaterias = async (req, res) => {
   try {
-    const { data, error } = await supabase
-      .from('materias')
-      .select('*')
-      .eq('profesor_id', req.user.id)
-      .order('created_at', { ascending: false });
+    const userId = req.user.id;
+    const admin = await esAdmin(userId);
+    
+    let query = supabase.from('materias').select('*');
+    if (!admin) {
+      query = query.eq('profesor_id', userId);
+    }
+    const { data, error } = await query.order('created_at', { ascending: false });
     if (error) throw error;
     res.json(data);
   } catch (error) {
@@ -14,12 +29,34 @@ const getMaterias = async (req, res) => {
   }
 };
 
+// Crear materia (permitir asignar profesor_id si es admin)
 const createMateria = async (req, res) => {
-  const { nombre, descripcion, grado, seccion, carrera } = req.body;
+  const { nombre, descripcion, grado, seccion, carrera, ciclo, profesor_id } = req.body;
+  const userId = req.user.id;
+  const admin = await esAdmin(userId);
+  
+  // Determinar a quién se asigna la materia
+  let asignadoA = profesor_id;
+  if (!admin) {
+    // Un profesor común solo puede crear materias para sí mismo
+    asignadoA = userId;
+  } else if (!asignadoA) {
+    // Admin no especificó profesor_id: asignar a sí mismo? Lo dejamos vacío (sin profesor)
+    asignadoA = null;
+  }
+  
   try {
     const { data, error } = await supabase
       .from('materias')
-      .insert([{ profesor_id: req.user.id, nombre, descripcion, grado, seccion, carrera }])
+      .insert([{ 
+        profesor_id: asignadoA, 
+        nombre, 
+        descripcion, 
+        grado, 
+        seccion, 
+        carrera,
+        ciclo: ciclo || null
+      }])
       .select();
     if (error) throw error;
     res.json(data[0]);
@@ -28,31 +65,41 @@ const createMateria = async (req, res) => {
   }
 };
 
+// Actualizar materia (admin puede actualizar cualquier materia, profesor solo la suya)
 const updateMateria = async (req, res) => {
   const { id } = req.params;
   const updates = req.body;
+  const userId = req.user.id;
+  const admin = await esAdmin(userId);
+  
   try {
-    const { data, error } = await supabase
-      .from('materias')
-      .update(updates)
-      .eq('id', id)
-      .eq('profesor_id', req.user.id)
-      .select();
+    let query = supabase.from('materias').update(updates).eq('id', id);
+    if (!admin) {
+      query = query.eq('profesor_id', userId);
+    }
+    const { data, error } = await query.select();
     if (error) throw error;
+    if (!data || data.length === 0) {
+      return res.status(403).json({ error: 'No tienes permiso para modificar esta materia' });
+    }
     res.json(data[0]);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
 
+// Eliminar materia (admin puede eliminar cualquier materia, profesor solo la suya)
 const deleteMateria = async (req, res) => {
   const { id } = req.params;
+  const userId = req.user.id;
+  const admin = await esAdmin(userId);
+  
   try {
-    const { error } = await supabase
-      .from('materias')
-      .delete()
-      .eq('id', id)
-      .eq('profesor_id', req.user.id);
+    let query = supabase.from('materias').delete().eq('id', id);
+    if (!admin) {
+      query = query.eq('profesor_id', userId);
+    }
+    const { error } = await query;
     if (error) throw error;
     res.json({ message: 'Materia eliminada' });
   } catch (error) {
@@ -60,6 +107,7 @@ const deleteMateria = async (req, res) => {
   }
 };
 
+// Las siguientes funciones no necesitan cambios (gestionan estudiantes por materia)
 const getEstudiantesByMateria = async (req, res) => {
   const { id } = req.params;
   try {
