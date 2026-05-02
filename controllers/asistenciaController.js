@@ -271,10 +271,11 @@ const limpiarAsistenciaHoy = async (req, res) => {
   res.json({ message: 'Asistencia del día limpiada' });
 };
 
-// ========== REPORTE POR RANGO DE FECHAS (JSON) - INCLUYE MATERIA ==========
+// ========== REPORTE POR RANGO DE FECHAS (JSON) - INCLUYE MATERIA Y FILTRADO POR PROFESOR ==========
 const getReporteAsistencia = async (req, res) => {
-  const { fechaInicio, fechaFin } = req.query;
-  console.log(`📊 Reporte JSON - Desde: ${fechaInicio}, Hasta: ${fechaFin}`);
+  const { fechaInicio, fechaFin, profesorEmail } = req.query;
+  console.log(`📊 Reporte JSON - Desde: ${fechaInicio}, Hasta: ${fechaFin}, Profesor: ${profesorEmail || 'todos'}`);
+
   let query = supabase
     .from('asistencia')
     .select(`
@@ -283,8 +284,9 @@ const getReporteAsistencia = async (req, res) => {
       hora,
       materia_id,
       estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url),
-      materias (nombre)
+      materias (nombre, grado, seccion, carrera, profesor_id)
     `);
+
   if (fechaInicio && fechaFin) {
     query = query.gte('fecha', fechaInicio).lte('fecha', fechaFin);
   } else if (fechaInicio) {
@@ -292,12 +294,38 @@ const getReporteAsistencia = async (req, res) => {
   } else if (fechaFin) {
     query = query.lte('fecha', fechaFin);
   }
+
+  // Filtrar por profesor si se proporciona y no es "all"
+  if (profesorEmail && profesorEmail !== 'all') {
+    // Obtener ID del profesor y sus materias
+    const { data: profesor, error: errProf } = await supabase
+      .from('profesores')
+      .select('id')
+      .eq('email', profesorEmail)
+      .single();
+    if (!errProf && profesor) {
+      const { data: materias, error: errMat } = await supabase
+        .from('materias')
+        .select('id')
+        .eq('profesor_id', profesor.id);
+      if (!errMat && materias && materias.length > 0) {
+        const idsMaterias = materias.map(m => m.id);
+        query = query.in('materia_id', idsMaterias);
+      } else {
+        // Si no tiene materias, devolver vacío
+        return res.json([]);
+      }
+    } else {
+      return res.status(404).json({ error: 'Profesor no encontrado' });
+    }
+  }
+
   const { data, error } = await query.order('fecha', { ascending: false });
   if (error) {
     console.log('❌ Error en reporte:', error.message);
     return res.status(400).json({ error: error.message });
   }
-  // Agregar materia_nombre a cada registro
+
   const resultados = data.map(item => ({
     ...item,
     materia_nombre: item.materias?.nombre || 'Sin materia'
@@ -370,11 +398,11 @@ const exportarReporteExcel = async (req, res) => {
 
 // Exportar reporte completo (asistencias agrupadas por CLASE, mostrando grado/sección de la materia)
 const exportarReporteCompletoExcel = async (req, res) => {
-  const { fecha, usuario, nombreProfesor, grado, seccion } = req.query;
+  const { fecha, usuario, nombreProfesor, grado, seccion, profesorEmail } = req.query;
   if (!fecha) {
     return res.status(400).json({ error: 'Debe proporcionar una fecha (YYYY-MM-DD)' });
   }
-  console.log(`📊 Exportando reporte completo - Fecha: ${fecha}, Usuario: ${usuario || 'anon'}, Nombre: ${nombreProfesor || 'No especificado'}, Grado: ${grado || 'todos'}, Sección: ${seccion || 'todas'}`);
+  console.log(`📊 Exportando reporte completo - Fecha: ${fecha}, Usuario: ${usuario || 'anon'}, Nombre: ${nombreProfesor || 'No especificado'}, Grado: ${grado || 'todos'}, Sección: ${seccion || 'todas'}, ProfesorEmail: ${profesorEmail || 'todos'}`);
   try {
     let queryAsistencias = supabase
       .from('asistencia')
@@ -383,9 +411,43 @@ const exportarReporteCompletoExcel = async (req, res) => {
         hora,
         materia_id,
         estudiantes (cedula, nombre, apellido, grado, seccion, carrera),
-        materias (id, grado, seccion, carrera, nombre)
+        materias (id, grado, seccion, carrera, nombre, profesor_id)
       `)
       .eq('fecha', fecha);
+
+    // Filtrar por profesor si se proporciona y no es "all"
+    if (profesorEmail && profesorEmail !== 'all') {
+      const { data: profesor, error: errProf } = await supabase
+        .from('profesores')
+        .select('id')
+        .eq('email', profesorEmail)
+        .single();
+      if (!errProf && profesor) {
+        const { data: materias, error: errMat } = await supabase
+          .from('materias')
+          .select('id')
+          .eq('profesor_id', profesor.id);
+        if (!errMat && materias && materias.length > 0) {
+          const idsMaterias = materias.map(m => m.id);
+          queryAsistencias = queryAsistencias.in('materia_id', idsMaterias);
+        } else {
+          // No hay materias para este profesor, devolver Excel vacío o mensaje
+          const workbook = new ExcelJS.Workbook();
+          const worksheet = workbook.addWorksheet(`Asistencia_${fecha}`);
+          worksheet.addRow(['No se encontraron asistencias para este profesor en la fecha indicada.']);
+          const buffer = await workbook.xlsx.writeBuffer();
+          const fileName = `reporte_completo_vacio_${fecha}_${Date.now()}.xlsx`;
+          const { data: uploadData, error: uploadError } = await supabase.storage
+            .from('reportes')
+            .upload(fileName, buffer, { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+          if (uploadError) throw uploadError;
+          const { data: urlData } = supabase.storage.from('reportes').getPublicUrl(fileName);
+          return res.json({ success: true, url: urlData.publicUrl });
+        }
+      } else {
+        return res.status(404).json({ error: 'Profesor no encontrado' });
+      }
+    }
 
     if (grado) queryAsistencias = queryAsistencias.filter('materias.grado', 'eq', grado);
     if (seccion) queryAsistencias = queryAsistencias.filter('materias.seccion', 'eq', seccion);
