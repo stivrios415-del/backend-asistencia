@@ -29,12 +29,13 @@ async function contarFaltasEnMes(cedula, año, mes) {
     .lte('fecha', ultimoDia);
   if (error) return 0;
   const diasConAsistencia = data.length;
-  const diasTotales = Math.ceil((new Date(ultimoDia) - new Date(primerDia)) / (1000 * 60 * 60 * 24)) + 1;
+  const diasTotales =
+    Math.ceil((new Date(ultimoDia) - new Date(primerDia)) / (1000 * 60 * 60 * 24)) + 1;
   const faltas = diasTotales - diasConAsistencia;
   return faltas > 0 ? faltas : 0;
 }
 
-// Registrar asistencia (con validación normalizada)
+// ========== REGISTRAR ASISTENCIA ==========
 const registrarAsistencia = async (req, res) => {
   console.log('📥 POST /api/asistencia - Body:', req.body);
   const { cedula, materiaId } = req.body;
@@ -48,7 +49,6 @@ const registrarAsistencia = async (req, res) => {
     return res.status(400).json({ error: 'Debe especificar la materia/clase' });
   }
 
-  // 1. Obtener datos de la materia (grado, carrera)
   const { data: materia, error: errMateria } = await supabase
     .from('materias')
     .select('grado, carrera')
@@ -60,7 +60,6 @@ const registrarAsistencia = async (req, res) => {
     return res.status(404).json({ error: 'La clase seleccionada no existe' });
   }
 
-  // 2. Obtener datos del estudiante
   const { data: estudiante, error: errEstudiante } = await supabase
     .from('estudiantes')
     .select('cedula, nombre, apellido, grado, seccion, carrera, foto_url')
@@ -75,14 +74,15 @@ const registrarAsistencia = async (req, res) => {
   console.log('✅ Estudiante encontrado:', estudiante);
   console.log('📚 Materia requerida: grado', materia.grado, 'carrera', materia.carrera);
 
-  // 3. Validar normalizada (sin acentos, minúsculas)
   const gradoMateria = normalizarTexto(materia.grado);
   const carreraMateria = normalizarTexto(materia.carrera);
   const gradoEstudiante = normalizarTexto(estudiante.grado);
   const carreraEstudiante = normalizarTexto(estudiante.carrera);
 
   if (gradoEstudiante !== gradoMateria || carreraEstudiante !== carreraMateria) {
-    console.log(`❌ Validación fallida. Materia: (${gradoMateria}, ${carreraMateria}) vs Estudiante: (${gradoEstudiante}, ${carreraEstudiante})`);
+    console.log(
+      `❌ Validación fallida. Materia: (${gradoMateria}, ${carreraMateria}) vs Estudiante: (${gradoEstudiante}, ${carreraEstudiante})`
+    );
     return res.status(400).json({
       error: `Este estudiante no pertenece a esta clase. Solo se permite para grado ${materia.grado} - ${materia.carrera}.`
     });
@@ -91,8 +91,7 @@ const registrarAsistencia = async (req, res) => {
   const hoy = new Date().toISOString().split('T')[0];
   const ahora = new Date().toLocaleTimeString('en-GB', { hour12: false });
 
-  // 4. Verificar si ya registró asistencia hoy
-  const { data: yaRegistro, error: errYaRegistro } = await supabase
+  const { data: yaRegistro } = await supabase
     .from('asistencia')
     .select('id')
     .eq('cedula', cedula)
@@ -107,7 +106,6 @@ const registrarAsistencia = async (req, res) => {
     });
   }
 
-  // 5. Insertar asistencia
   console.log(`📝 Insertando asistencia para ${cedula} en fecha ${hoy} hora ${ahora} con materia ${materiaId}`);
   const { error: errAsistencia } = await supabase
     .from('asistencia')
@@ -134,7 +132,7 @@ const registrarAsistencia = async (req, res) => {
   });
 };
 
-// Obtener asistencia del día (FILTRADA POR PROFESOR)
+// ========== OBTENER ASISTENCIA DEL DÍA (FILTRADA POR PROFESOR) ==========
 const getAsistenciaHoy = async (req, res) => {
   const hoy = new Date().toISOString().split('T')[0];
   const añoActual = new Date().getFullYear();
@@ -210,7 +208,7 @@ const getAsistenciaHoy = async (req, res) => {
   res.json(asistenciaConFaltas);
 };
 
-// Obtener asistencia por fecha específica
+// ========== OBTENER ASISTENCIA POR FECHA ESPECÍFICA ==========
 const getAsistenciaByFecha = async (req, res) => {
   const { fecha } = req.params;
   console.log(`📅 Obteniendo asistencia para fecha: ${fecha}`);
@@ -230,7 +228,7 @@ const getAsistenciaByFecha = async (req, res) => {
   res.json(data);
 };
 
-// Obtener asistencia por grado y sección (reportes)
+// ========== OBTENER ASISTENCIA POR GRADO Y SECCIÓN ==========
 const getAsistenciaPorGrado = async (req, res) => {
   const { grado, seccion, fecha } = req.query;
   const fechaFiltro = fecha || new Date().toISOString().split('T')[0];
@@ -255,7 +253,7 @@ const getAsistenciaPorGrado = async (req, res) => {
   res.json(filtrados);
 };
 
-// Limpiar toda la asistencia del día
+// ========== LIMPIAR ASISTENCIA DEL DÍA ==========
 const limpiarAsistenciaHoy = async (req, res) => {
   const hoy = new Date().toISOString().split('T')[0];
   console.log(`🗑️ Limpiando asistencia del día: ${hoy}`);
@@ -271,7 +269,7 @@ const limpiarAsistenciaHoy = async (req, res) => {
   res.json({ message: 'Asistencia del día limpiada' });
 };
 
-// ========== REPORTE POR RANGO DE FECHAS (JSON) - INCLUYE MATERIA Y FILTRADO POR PROFESOR ==========
+// ========== REPORTE POR RANGO DE FECHAS (JSON) ==========
 const getReporteAsistencia = async (req, res) => {
   const { fechaInicio, fechaFin, profesorEmail } = req.query;
   console.log(`📊 Reporte JSON - Desde: ${fechaInicio}, Hasta: ${fechaFin}, Profesor: ${profesorEmail || 'todos'}`);
@@ -295,7 +293,6 @@ const getReporteAsistencia = async (req, res) => {
     query = query.lte('fecha', fechaFin);
   }
 
-  // Filtrar por profesor si se proporciona un email válido y no es "all" o vacío
   if (profesorEmail && profesorEmail !== 'all' && profesorEmail !== '') {
     const { data: profesor, error: errProf } = await supabase
       .from('profesores')
@@ -331,13 +328,14 @@ const getReporteAsistencia = async (req, res) => {
   res.json(resultados);
 };
 
-// Exportar a Excel (solo estudiantes con asistencia, rango de fechas)
+// ========== EXPORTAR A EXCEL (rango de fechas) ==========
 const exportarReporteExcel = async (req, res) => {
   const { fechaInicio, fechaFin, usuario } = req.query;
   console.log(`📊 Exportando Excel - Desde: ${fechaInicio}, Hasta: ${fechaFin}, Usuario: ${usuario || 'anon'}`);
   if (!fechaInicio || !fechaFin) {
     return res.status(400).json({ error: 'Debe proporcionar fechaInicio y fechaFin' });
   }
+
   let query = supabase
     .from('asistencia')
     .select(`
@@ -347,11 +345,13 @@ const exportarReporteExcel = async (req, res) => {
       estudiantes (cedula, nombre, apellido, grado, seccion)
     `);
   query = query.gte('fecha', fechaInicio).lte('fecha', fechaFin);
+
   const { data, error } = await query.order('fecha', { ascending: false });
   if (error) {
     console.error('❌ Error consultando datos:', error);
     return res.status(400).json({ error: error.message });
   }
+
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet('Reporte Asistencia');
   worksheet.columns = [
@@ -363,6 +363,7 @@ const exportarReporteExcel = async (req, res) => {
     { header: 'Grado', key: 'grado', width: 8 },
     { header: 'Sección', key: 'seccion', width: 8 },
   ];
+
   data.forEach(item => {
     worksheet.addRow({
       fecha: item.fecha,
@@ -374,33 +375,47 @@ const exportarReporteExcel = async (req, res) => {
       seccion: item.estudiantes?.seccion || '',
     });
   });
+
   const buffer = await workbook.xlsx.writeBuffer();
   const fileName = `reporte_${fechaInicio}_a_${fechaFin}_${Date.now()}.xlsx`;
-  const { data: uploadData, error: uploadError } = await supabase.storage
+
+  const { error: uploadError } = await supabase.storage
     .from('reportes')
-    .upload(fileName, buffer, { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    .upload(fileName, buffer, {
+      contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    });
+
   if (uploadError) {
     console.error('❌ Error subiendo archivo:', uploadError);
     return res.status(500).json({ error: 'Error al guardar el archivo en el servidor' });
   }
+
   const { data: urlData } = supabase.storage.from('reportes').getPublicUrl(fileName);
   const archivo_url = urlData.publicUrl;
+
   await supabase.from('reportes_generados').insert([{
     fecha_inicio: fechaInicio,
     fecha_fin: fechaFin,
     archivo_url,
     usuario: usuario || 'profesor',
   }]);
+
   res.json({ success: true, url: archivo_url });
 };
 
-// Exportar reporte completo (asistencias agrupadas por CLASE, mostrando grado/sección de la materia)
+// ========== EXPORTAR REPORTE COMPLETO POR CLASE (CORREGIDO) ==========
 const exportarReporteCompletoExcel = async (req, res) => {
   const { fecha, usuario, nombreProfesor, grado, seccion, profesorEmail } = req.query;
   if (!fecha) {
     return res.status(400).json({ error: 'Debe proporcionar una fecha (YYYY-MM-DD)' });
   }
-  console.log(`📊 Exportando reporte completo - Fecha: ${fecha}, Usuario: ${usuario || 'anon'}, Nombre: ${nombreProfesor || 'No especificado'}, Grado: ${grado || 'todos'}, Sección: ${seccion || 'todas'}, ProfesorEmail: ${profesorEmail || 'todos'}`);
+
+  console.log(
+    `📊 Exportando reporte completo - Fecha: ${fecha}, Usuario: ${usuario || 'anon'}, ` +
+    `Nombre: ${nombreProfesor || 'No especificado'}, Grado: ${grado || 'todos'}, ` +
+    `Sección: ${seccion || 'todas'}, ProfesorEmail: ${profesorEmail || 'todos'}`
+  );
+
   try {
     let queryAsistencias = supabase
       .from('asistencia')
@@ -413,33 +428,38 @@ const exportarReporteCompletoExcel = async (req, res) => {
       `)
       .eq('fecha', fecha);
 
-    // CORRECCIÓN: solo aplicar filtro de profesor si profesorEmail existe y no es "all" ni cadena vacía
     const filtrarPorProfesor = profesorEmail && profesorEmail !== 'all' && profesorEmail !== '';
+
     if (filtrarPorProfesor) {
       const { data: profesor, error: errProf } = await supabase
         .from('profesores')
         .select('id')
         .eq('email', profesorEmail)
         .single();
+
       if (errProf || !profesor) {
         console.error('❌ Profesor no encontrado:', profesorEmail);
-        // Devolver Excel vacío con mensaje
+        // Devolver Excel vacío con mensaje de error
         const workbook = new ExcelJS.Workbook();
         const worksheet = workbook.addWorksheet(`Asistencia_${fecha}`);
         worksheet.addRow([`Error: No se encontró al profesor con email ${profesorEmail}`]);
         const buffer = await workbook.xlsx.writeBuffer();
         const fileName = `reporte_completo_error_${fecha}_${Date.now()}.xlsx`;
-        const { data: uploadData, error: uploadError } = await supabase.storage
+        const { error: uploadError } = await supabase.storage
           .from('reportes')
-          .upload(fileName, buffer, { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+          .upload(fileName, buffer, {
+            contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          });
         if (uploadError) throw uploadError;
         const { data: urlData } = supabase.storage.from('reportes').getPublicUrl(fileName);
         return res.json({ success: true, url: urlData.publicUrl });
       }
+
       const { data: materias, error: errMat } = await supabase
         .from('materias')
         .select('id')
         .eq('profesor_id', profesor.id);
+
       if (errMat || !materias || materias.length === 0) {
         // No tiene materias, devolver Excel vacío
         const workbook = new ExcelJS.Workbook();
@@ -447,13 +467,16 @@ const exportarReporteCompletoExcel = async (req, res) => {
         worksheet.addRow(['No se encontraron asistencias para este profesor en la fecha indicada.']);
         const buffer = await workbook.xlsx.writeBuffer();
         const fileName = `reporte_completo_vacio_${fecha}_${Date.now()}.xlsx`;
-        const { data: uploadData, error: uploadError } = await supabase.storage
+        const { error: uploadError } = await supabase.storage
           .from('reportes')
-          .upload(fileName, buffer, { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+          .upload(fileName, buffer, {
+            contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          });
         if (uploadError) throw uploadError;
         const { data: urlData } = supabase.storage.from('reportes').getPublicUrl(fileName);
         return res.json({ success: true, url: urlData.publicUrl });
       }
+
       const idsMaterias = materias.map(m => m.id);
       queryAsistencias = queryAsistencias.in('materia_id', idsMaterias);
     }
@@ -464,6 +487,7 @@ const exportarReporteCompletoExcel = async (req, res) => {
     const { data: asistencias, error: errAsistencias } = await queryAsistencias;
     if (errAsistencias) throw errAsistencias;
 
+    // Agrupar asistencias por materia
     const grupos = new Map();
     asistencias.forEach(asis => {
       const materia = asis.materias;
@@ -480,7 +504,13 @@ const exportarReporteCompletoExcel = async (req, res) => {
 
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet(`Asistencia_${fecha}`);
-    const headerStyle = { font: { bold: true }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF8FF' } } };
+
+    const headerStyle = {
+      font: { bold: true },
+      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF8FF' } }
+    };
+
+    // ── CORRECCIÓN PRINCIPAL: separar addRow() y mergeCells() ──
     let currentRow = 1;
 
     const fechaObj = new Date(fecha + 'T12:00:00');
@@ -491,12 +521,22 @@ const exportarReporteCompletoExcel = async (req, res) => {
       day: 'numeric',
       timeZone: 'America/Tegucigalpa'
     });
-    worksheet.addRow([`Fecha: ${fechaLegible}`]).mergeCells(`A${currentRow}:H${currentRow}`);
+
+    // Fila de fecha
+    worksheet.addRow([`Fecha: ${fechaLegible}`]);
+    worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
+    worksheet.getRow(currentRow).font = { bold: true, size: 13 };
     currentRow++;
+
+    // Fila de nombre del generador
     if (nombreProfesor) {
-      worksheet.addRow([`Generado por: ${nombreProfesor}`]).mergeCells(`A${currentRow}:H${currentRow}`);
+      worksheet.addRow([`Generado por: ${nombreProfesor}`]);
+      worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
+      worksheet.getRow(currentRow).font = { italic: true };
       currentRow++;
     }
+
+    // Fila vacía separadora
     worksheet.addRow([]);
     currentRow++;
 
@@ -504,23 +544,36 @@ const exportarReporteCompletoExcel = async (req, res) => {
       worksheet.addRow(['No se registraron asistencias en esta fecha para las clases seleccionadas.']);
     } else {
       const gruposOrdenados = Array.from(grupos.values()).sort((a, b) => {
-        if (a.materia.grado !== b.materia.grado) return a.materia.grado.localeCompare(b.materia.grado);
-        return a.materia.seccion.localeCompare(b.materia.seccion);
+        if (a.materia.grado !== b.materia.grado) {
+          return String(a.materia.grado).localeCompare(String(b.materia.grado));
+        }
+        return String(a.materia.seccion).localeCompare(String(b.materia.seccion));
       });
 
       for (const grupo of gruposOrdenados) {
         const materia = grupo.materia;
-        const tituloClase = `${materia.nombre || materia.carrera || 'Clase'} - Grado ${materia.grado}° Sección ${materia.seccion}`;
-        const titleRow = worksheet.addRow([tituloClase]);
+        const tituloClase =
+          `${materia.nombre || materia.carrera || 'Clase'} - Grado ${materia.grado}° Sección ${materia.seccion}`;
+
+        // Título de la clase — CORRECCIÓN: separar addRow y mergeCells
+        worksheet.addRow([tituloClase]);
         worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
+        const titleRow = worksheet.getRow(currentRow);
         titleRow.font = { bold: true, size: 12 };
-        titleRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9EAF7' } };
+        titleRow.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FFD9EAF7' }
+        };
         currentRow++;
 
-        const headerRow = worksheet.addRow(['Cédula', 'Nombre', 'Apellido', 'Grado (Est.)', 'Sección (Est.)', 'Carrera', 'Hora de Escaneo']);
+        // Encabezados de columnas
+        worksheet.addRow(['Cédula', 'Nombre', 'Apellido', 'Grado (Est.)', 'Sección (Est.)', 'Carrera', 'Hora de Escaneo']);
+        const headerRow = worksheet.getRow(currentRow);
         headerRow.eachCell(cell => { cell.style = headerStyle; });
         currentRow++;
 
+        // Filas de estudiantes
         for (const item of grupo.asistencias) {
           const est = item.estudiante;
           worksheet.addRow([
@@ -534,11 +587,14 @@ const exportarReporteCompletoExcel = async (req, res) => {
           ]);
           currentRow++;
         }
+
+        // Fila vacía entre grupos
         worksheet.addRow([]);
         currentRow++;
       }
     }
 
+    // Ancho de columnas
     worksheet.columns.forEach((col, idx) => {
       if (idx === 0) col.width = 15;
       else if (idx === 1) col.width = 20;
@@ -552,9 +608,12 @@ const exportarReporteCompletoExcel = async (req, res) => {
 
     const buffer = await workbook.xlsx.writeBuffer();
     const fileName = `reporte_completo_por_clase_${fecha}_${Date.now()}.xlsx`;
-    const { data: uploadData, error: uploadError } = await supabase.storage
+
+    const { error: uploadError } = await supabase.storage
       .from('reportes')
-      .upload(fileName, buffer, { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      .upload(fileName, buffer, {
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      });
     if (uploadError) throw uploadError;
 
     const { data: urlData } = supabase.storage.from('reportes').getPublicUrl(fileName);
@@ -570,17 +629,18 @@ const exportarReporteCompletoExcel = async (req, res) => {
         seccion: seccion || null,
       }]);
     } catch (metaErr) {
-      console.warn('⚠️ No se pudo guardar metadata', metaErr.message);
+      console.warn('⚠️ No se pudo guardar metadata:', metaErr.message);
     }
 
     res.json({ success: true, url: archivo_url });
+
   } catch (error) {
     console.error('❌ Error en reporte completo por clase:', error);
     res.status(500).json({ error: error.message });
   }
 };
 
-// Listar reportes generados
+// ========== LISTAR REPORTES GENERADOS ==========
 const getReportesGenerados = async (req, res) => {
   const { data, error } = await supabase
     .from('reportes_generados')
@@ -590,7 +650,7 @@ const getReportesGenerados = async (req, res) => {
   res.json(data);
 };
 
-// ========== ESTADÍSTICAS DE ASISTENCIA (JSON) CON FILTRO POR PROFESOR ==========
+// ========== ESTADÍSTICAS DE ASISTENCIA ==========
 const getEstadisticas = async (req, res) => {
   try {
     const { fechaInicio, fechaFin, profesorEmail } = req.query;
@@ -628,7 +688,9 @@ const getEstadisticas = async (req, res) => {
       .order('apellido', { ascending: true });
 
     if (filtrosGradoCarrera.length > 0) {
-      const conditions = filtrosGradoCarrera.map(f => `(grado.eq.${f.grado},carrera.eq.${f.carrera})`).join(',');
+      const conditions = filtrosGradoCarrera
+        .map(f => `(grado.eq.${f.grado},carrera.eq.${f.carrera})`)
+        .join(',');
       queryEstudiantes = queryEstudiantes.or(conditions);
     }
 
@@ -652,11 +714,11 @@ const getEstadisticas = async (req, res) => {
     const totalDias = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
 
     const estadisticas = estudiantes.map(est => {
-      const asistencias = asistenciaCount[est.cedula] || 0;
-      const faltas = totalDias - asistencias;
+      const asistenciasCount = asistenciaCount[est.cedula] || 0;
+      const faltas = totalDias - asistenciasCount;
       return {
         ...est,
-        asistencias,
+        asistencias: asistenciasCount,
         faltas: faltas > 0 ? faltas : 0,
         totalDias
       };
@@ -679,6 +741,7 @@ const getEstadisticas = async (req, res) => {
       resumenGradoCarrera[key].totalAsistencias += est.asistencias;
       resumenGradoCarrera[key].totalEstudiantes++;
     });
+
     const resumenArray = Object.values(resumenGradoCarrera).map(item => ({
       grado: item.grado,
       carrera: item.carrera,
@@ -697,7 +760,7 @@ const getEstadisticas = async (req, res) => {
   }
 };
 
-// ========== EXPORTAR ESTADÍSTICAS A EXCEL (CON FILTRO POR PROFESOR) ==========
+// ========== EXPORTAR ESTADÍSTICAS A EXCEL ==========
 const exportarEstadisticasExcel = async (req, res) => {
   try {
     const { fechaInicio, fechaFin, profesorEmail } = req.query;
@@ -735,7 +798,9 @@ const exportarEstadisticasExcel = async (req, res) => {
       .order('apellido', { ascending: true });
 
     if (filtrosGradoCarrera.length > 0) {
-      const conditions = filtrosGradoCarrera.map(f => `(grado.eq.${f.grado},carrera.eq.${f.carrera})`).join(',');
+      const conditions = filtrosGradoCarrera
+        .map(f => `(grado.eq.${f.grado},carrera.eq.${f.carrera})`)
+        .join(',');
       queryEstudiantes = queryEstudiantes.or(conditions);
     }
 
@@ -759,11 +824,11 @@ const exportarEstadisticasExcel = async (req, res) => {
     const totalDias = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
 
     const estadisticas = estudiantes.map(est => {
-      const asistencias = asistenciaCount[est.cedula] || 0;
-      const faltas = totalDias - asistencias;
+      const asistenciasCount = asistenciaCount[est.cedula] || 0;
+      const faltas = totalDias - asistenciasCount;
       return {
         ...est,
-        asistencias,
+        asistencias: asistenciasCount,
         faltas: faltas > 0 ? faltas : 0,
         totalDias
       };
@@ -786,6 +851,7 @@ const exportarEstadisticasExcel = async (req, res) => {
       resumenGradoCarrera[key].totalAsistencias += est.asistencias;
       resumenGradoCarrera[key].totalEstudiantes++;
     });
+
     const resumenArray = Object.values(resumenGradoCarrera).map(item => ({
       grado: item.grado,
       carrera: item.carrera,
@@ -798,10 +864,12 @@ const exportarEstadisticasExcel = async (req, res) => {
     });
 
     const workbook = new ExcelJS.Workbook();
-    const headerStyle = { font: { bold: true }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF8FF' } } };
+    const headerStyle = {
+      font: { bold: true },
+      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF8FF' } }
+    };
 
-    const wsFaltas = workbook.addWorksheet('Más faltas');
-    wsFaltas.columns = [
+    const columnasEstudiante = [
       { header: 'Cédula', key: 'cedula', width: 15 },
       { header: 'Nombre', key: 'nombre', width: 20 },
       { header: 'Apellido', key: 'apellido', width: 20 },
@@ -812,12 +880,15 @@ const exportarEstadisticasExcel = async (req, res) => {
       { header: 'Faltas', key: 'faltas', width: 10 },
       { header: 'Total días', key: 'totalDias', width: 12 }
     ];
-    wsFaltas.getRow(1).eachCell(cell => cell.style = headerStyle);
+
+    const wsFaltas = workbook.addWorksheet('Más faltas');
+    wsFaltas.columns = columnasEstudiante;
+    wsFaltas.getRow(1).eachCell(cell => { cell.style = headerStyle; });
     masFaltas.forEach(est => wsFaltas.addRow(est));
 
     const wsRecord = workbook.addWorksheet('Mejor récord');
-    wsRecord.columns = wsFaltas.columns;
-    wsRecord.getRow(1).eachCell(cell => cell.style = headerStyle);
+    wsRecord.columns = columnasEstudiante;
+    wsRecord.getRow(1).eachCell(cell => { cell.style = headerStyle; });
     mejorRecord.forEach(est => wsRecord.addRow(est));
 
     const wsResumen = workbook.addWorksheet('Resumen por grado y carrera');
@@ -828,20 +899,22 @@ const exportarEstadisticasExcel = async (req, res) => {
       { header: 'Total estudiantes', key: 'totalEstudiantes', width: 18 },
       { header: 'Promedio asistencias', key: 'promedioAsistencias', width: 20 }
     ];
-    wsResumen.getRow(1).eachCell(cell => cell.style = headerStyle);
+    wsResumen.getRow(1).eachCell(cell => { cell.style = headerStyle; });
     resumenArray.forEach(row => wsResumen.addRow(row));
 
     const buffer = await workbook.xlsx.writeBuffer();
     const fileName = `estadisticas_asistencia_${inicio}_a_${fin}_${Date.now()}.xlsx`;
-    const { data: uploadData, error: uploadError } = await supabase.storage
+
+    const { error: uploadError } = await supabase.storage
       .from('reportes')
-      .upload(fileName, buffer, { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      .upload(fileName, buffer, {
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      });
     if (uploadError) throw uploadError;
 
     const { data: urlData } = supabase.storage.from('reportes').getPublicUrl(fileName);
-    const archivo_url = urlData.publicUrl;
+    res.json({ success: true, url: urlData.publicUrl });
 
-    res.json({ success: true, url: archivo_url });
   } catch (error) {
     console.error('❌ Error exportando estadísticas:', error);
     res.status(500).json({ error: error.message });
