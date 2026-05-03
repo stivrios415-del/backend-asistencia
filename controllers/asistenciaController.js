@@ -543,46 +543,302 @@ const exportarEstadisticasExcel = async (req, res) => {
     const resumenMap = {};
     estadisticasArr.forEach(est => {
       const key = `${est.grado}|${est.carrera || 'Sin carrera'}`;
-      if (!resumenMap[key]) resumenMap[key] = { grado: est.grado, carrera: est.carrera || 'Sin carrera', totalAsistencias: 0, totalEstudiantes: 0 };
+      if (!resumenMap[key]) resumenMap[key] = { grado: est.grado, carrera: est.carrera || 'Sin carrera', totalAsistencias: 0, totalFaltas: 0, totalEstudiantes: 0 };
       resumenMap[key].totalAsistencias += est.asistencias;
+      resumenMap[key].totalFaltas += est.faltas;
       resumenMap[key].totalEstudiantes++;
     });
     const resumenArray = Object.values(resumenMap).map(item => ({
-      ...item, promedioAsistencias: (item.totalAsistencias / item.totalEstudiantes).toFixed(1)
+      ...item,
+      promedioAsistencias: item.totalEstudiantes > 0
+        ? (item.totalAsistencias / item.totalEstudiantes).toFixed(1) : '0'
     })).sort((a, b) => {
       if (String(a.grado) !== String(b.grado)) return String(a.grado).localeCompare(String(b.grado));
       return a.carrera.localeCompare(b.carrera);
     });
 
     const workbook = new ExcelJS.Workbook();
-    const headerStyle = { font: { bold: true }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF8FF' } } };
+    workbook.creator = 'Sistema de Asistencia';
+    workbook.created = new Date();
+
+    const headerStyle = {
+      font: { bold: true, color: { argb: 'FFFFFFFF' } },
+      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF143C65' } },
+      alignment: { horizontal: 'center', vertical: 'middle' },
+      border: {
+        top: { style: 'thin' }, bottom: { style: 'thin' },
+        left: { style: 'thin' }, right: { style: 'thin' }
+      }
+    };
+    const subHeaderStyle = {
+      font: { bold: true, color: { argb: 'FFFFFFFF' } },
+      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF256D5B' } },
+      alignment: { horizontal: 'center' }
+    };
+    const dataStyle = {
+      border: {
+        top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        right: { style: 'thin', color: { argb: 'FFE2E8F0' } }
+      }
+    };
+    const altRowStyle = {
+      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF7FAFC' } },
+      border: dataStyle.border
+    };
+
     const colsEst = [
-      { header: 'Cédula', key: 'cedula', width: 15 }, { header: 'Nombre', key: 'nombre', width: 20 },
-      { header: 'Apellido', key: 'apellido', width: 20 }, { header: 'Grado', key: 'grado', width: 8 },
-      { header: 'Sección', key: 'seccion', width: 8 }, { header: 'Carrera', key: 'carrera', width: 20 },
-      { header: 'Asistencias', key: 'asistencias', width: 12 }, { header: 'Faltas', key: 'faltas', width: 10 },
+      { header: 'Cédula', key: 'cedula', width: 16 },
+      { header: 'Nombre', key: 'nombre', width: 22 },
+      { header: 'Apellido', key: 'apellido', width: 22 },
+      { header: 'Grado', key: 'grado', width: 8 },
+      { header: 'Sección', key: 'seccion', width: 10 },
+      { header: 'Carrera', key: 'carrera', width: 20 },
+      { header: 'Asistencias', key: 'asistencias', width: 13 },
+      { header: 'Faltas', key: 'faltas', width: 10 },
       { header: 'Total días', key: 'totalDias', width: 12 }
     ];
 
-    const wsFaltas = workbook.addWorksheet('Más faltas');
+    // ── Hoja 1: Dashboard con gráficas ────────────────────────────────────────
+    const wsDash = workbook.addWorksheet('📊 Dashboard');
+    wsDash.views = [{ showGridLines: false }];
+
+    // Título principal
+    wsDash.mergeCells('A1:I1');
+    const titleCell = wsDash.getCell('A1');
+    titleCell.value = `ESTADÍSTICAS DE ASISTENCIA — ${inicio} al ${fin}`;
+    titleCell.font = { bold: true, size: 16, color: { argb: 'FFFFFFFF' } };
+    titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF143C65' } };
+    titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    wsDash.getRow(1).height = 35;
+
+    // Subtítulo
+    wsDash.mergeCells('A2:I2');
+    const subCell = wsDash.getCell('A2');
+    subCell.value = `Total estudiantes: ${estudiantes.length}  |  Total días del período: ${totalDias}  |  Total asistencias registradas: ${asistencias.length}`;
+    subCell.font = { size: 11, color: { argb: 'FFFFFFFF' }, italic: true };
+    subCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF256D5B' } };
+    subCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    wsDash.getRow(2).height = 22;
+
+    wsDash.addRow([]); // fila 3 vacía
+
+    // Tabla de datos para la gráfica de barras (empieza en fila 4)
+    wsDash.getCell('A4').value = 'Grado / Carrera';
+    wsDash.getCell('B4').value = 'Total Asistencias';
+    wsDash.getCell('C4').value = 'Total Faltas';
+    wsDash.getCell('D4').value = 'Promedio Asist.';
+    wsDash.getCell('E4').value = 'Total Estudiantes';
+    ['A4','B4','C4','D4','E4'].forEach(addr => {
+      wsDash.getCell(addr).style = headerStyle;
+    });
+    wsDash.getRow(4).height = 20;
+
+    let fila = 5;
+    resumenArray.forEach((item, idx) => {
+      const etiqueta = `${item.grado}° ${item.carrera}`;
+      wsDash.getCell(`A${fila}`).value = etiqueta;
+      wsDash.getCell(`B${fila}`).value = item.totalAsistencias;
+      wsDash.getCell(`C${fila}`).value = item.totalFaltas;
+      wsDash.getCell(`D${fila}`).value = parseFloat(item.promedioAsistencias);
+      wsDash.getCell(`E${fila}`).value = item.totalEstudiantes;
+      const rowStyle = idx % 2 === 0 ? dataStyle : altRowStyle;
+      ['A','B','C','D','E'].forEach(col => {
+        wsDash.getCell(`${col}${fila}`).style = rowStyle;
+      });
+      fila++;
+    });
+
+    // Ajustar anchos de columnas del dashboard
+    wsDash.getColumn('A').width = 25;
+    wsDash.getColumn('B').width = 20;
+    wsDash.getColumn('C').width = 15;
+    wsDash.getColumn('D').width = 18;
+    wsDash.getColumn('E').width = 18;
+
+    const lastDataRow = fila - 1;
+
+    // ── GRÁFICA 1: Barras — Asistencias vs Faltas por grado/carrera ──────────
+    if (resumenArray.length > 0) {
+      const chartBar = workbook.addChart('bar', 'clustered');
+      chartBar.title = { name: 'Asistencias vs Faltas por Grado y Carrera' };
+      chartBar.style = 10;
+      chartBar.displayBlanksAs = 'zero';
+
+      chartBar.addSeries({
+        name: { formula: `'📊 Dashboard'!$B$4` },
+        categories: { formula: `'📊 Dashboard'!$A$5:$A$${lastDataRow}` },
+        values: { formula: `'📊 Dashboard'!$B$5:$B$${lastDataRow}` },
+        fill: { type: 'solid', color: '143C65' }
+      });
+
+      chartBar.addSeries({
+        name: { formula: `'📊 Dashboard'!$C$4` },
+        categories: { formula: `'📊 Dashboard'!$A$5:$A$${lastDataRow}` },
+        values: { formula: `'📊 Dashboard'!$C$5:$C$${lastDataRow}` },
+        fill: { type: 'solid', color: 'E53E3E' }
+      });
+
+      chartBar.plotArea = {
+        valAxis: [{ title: 'Cantidad' }],
+        catAxis: [{ title: 'Grado / Carrera' }]
+      };
+
+      chartBar.legend = { position: 'bottom' };
+      chartBar.view = {
+        x: { formula: `'📊 Dashboard'!$G$4` },
+        y: { formula: `'📊 Dashboard'!$G$4` },
+        width: 5486400,
+        height: 3200400
+      };
+
+      wsDash.addImage ? null : null; // placeholder
+      wsDash.addChart(chartBar, 'G4:O20');
+    }
+
+    // ── GRÁFICA 2: Pie — Distribución de asistencias por carrera ─────────────
+    if (resumenArray.length > 0) {
+      const chartPie = workbook.addChart('pie', 'pie');
+      chartPie.title = { name: 'Distribución de Asistencias por Carrera' };
+      chartPie.style = 26;
+      chartPie.displayBlanksAs = 'zero';
+
+      chartPie.addSeries({
+        name: 'Asistencias',
+        categories: { formula: `'📊 Dashboard'!$A$5:$A$${lastDataRow}` },
+        values: { formula: `'📊 Dashboard'!$B$5:$B$${lastDataRow}` },
+        dataLabels: { showPercent: true, showCatName: true, separator: '\n' }
+      });
+
+      chartPie.legend = { position: 'right' };
+      wsDash.addChart(chartPie, 'G22:O38');
+    }
+
+    // ── Hoja 2: Más faltas ────────────────────────────────────────────────────
+    const wsFaltas = workbook.addWorksheet('❌ Más faltas');
+    wsFaltas.views = [{ showGridLines: false }];
+    wsFaltas.mergeCells('A1:I1');
+    const faltasTitleCell = wsFaltas.getCell('A1');
+    faltasTitleCell.value = 'TOP 10 — ALUMNOS CON MÁS FALTAS';
+    faltasTitleCell.font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
+    faltasTitleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE53E3E' } };
+    faltasTitleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    wsFaltas.getRow(1).height = 28;
+    wsFaltas.addRow([]);
+
     wsFaltas.columns = colsEst;
-    wsFaltas.getRow(1).eachCell(cell => { cell.style = headerStyle; });
-    masFaltas.forEach(est => wsFaltas.addRow(est));
+    wsFaltas.getRow(3).values = colsEst.map(c => c.header);
+    wsFaltas.getRow(3).eachCell(cell => { cell.style = headerStyle; });
+    wsFaltas.getRow(3).height = 20;
 
-    const wsRecord = workbook.addWorksheet('Mejor récord');
+    masFaltas.forEach((est, idx) => {
+      const r = wsFaltas.addRow([est.cedula, est.nombre, est.apellido, est.grado, est.seccion, est.carrera, est.asistencias, est.faltas, est.totalDias]);
+      r.eachCell(cell => { cell.style = idx % 2 === 0 ? dataStyle : altRowStyle; });
+      // Colorear en rojo si faltas >= 3
+      if (est.faltas >= 3) {
+        r.getCell(8).font = { bold: true, color: { argb: 'FFCC0000' } };
+      }
+    });
+
+    // Gráfica de barras para faltas
+    if (masFaltas.length > 0) {
+      const faltasDataStart = 4;
+      const faltasDataEnd = faltasDataStart + masFaltas.length - 1;
+
+      const chartFaltas = workbook.addChart('bar', 'clustered');
+      chartFaltas.title = { name: 'Top 10 Alumnos con Más Faltas' };
+      chartFaltas.style = 10;
+
+      chartFaltas.addSeries({
+        name: 'Faltas',
+        categories: { formula: `'❌ Más faltas'!$B$${faltasDataStart}:$B$${faltasDataEnd}` },
+        values: { formula: `'❌ Más faltas'!$H$${faltasDataStart}:$H$${faltasDataEnd}` },
+        fill: { type: 'solid', color: 'E53E3E' }
+      });
+
+      chartFaltas.addSeries({
+        name: 'Asistencias',
+        categories: { formula: `'❌ Más faltas'!$B$${faltasDataStart}:$B$${faltasDataEnd}` },
+        values: { formula: `'❌ Más faltas'!$G$${faltasDataStart}:$G$${faltasDataEnd}` },
+        fill: { type: 'solid', color: '143C65' }
+      });
+
+      chartFaltas.legend = { position: 'bottom' };
+      wsFaltas.addChart(chartFaltas, 'A15:I30');
+    }
+
+    // ── Hoja 3: Mejor récord ──────────────────────────────────────────────────
+    const wsRecord = workbook.addWorksheet('🏆 Mejor récord');
+    wsRecord.views = [{ showGridLines: false }];
+    wsRecord.mergeCells('A1:I1');
+    const recordTitleCell = wsRecord.getCell('A1');
+    recordTitleCell.value = 'TOP 10 — ALUMNOS CON MEJOR RÉCORD DE ASISTENCIA';
+    recordTitleCell.font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
+    recordTitleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF256D5B' } };
+    recordTitleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    wsRecord.getRow(1).height = 28;
+    wsRecord.addRow([]);
+
     wsRecord.columns = colsEst;
-    wsRecord.getRow(1).eachCell(cell => { cell.style = headerStyle; });
-    mejorRecord.forEach(est => wsRecord.addRow(est));
+    wsRecord.getRow(3).values = colsEst.map(c => c.header);
+    wsRecord.getRow(3).eachCell(cell => { cell.style = headerStyle; });
+    wsRecord.getRow(3).height = 20;
 
-    const wsResumen = workbook.addWorksheet('Resumen por grado y carrera');
+    mejorRecord.forEach((est, idx) => {
+      const r = wsRecord.addRow([est.cedula, est.nombre, est.apellido, est.grado, est.seccion, est.carrera, est.asistencias, est.faltas, est.totalDias]);
+      r.eachCell(cell => { cell.style = idx % 2 === 0 ? dataStyle : altRowStyle; });
+      r.getCell(7).font = { bold: true, color: { argb: 'FF256D5B' } };
+    });
+
+    // Gráfica para mejor récord
+    if (mejorRecord.length > 0) {
+      const recDataStart = 4;
+      const recDataEnd = recDataStart + mejorRecord.length - 1;
+
+      const chartRecord = workbook.addChart('bar', 'clustered');
+      chartRecord.title = { name: 'Top 10 Alumnos con Mejor Récord' };
+      chartRecord.style = 10;
+
+      chartRecord.addSeries({
+        name: 'Asistencias',
+        categories: { formula: `'🏆 Mejor récord'!$B$${recDataStart}:$B$${recDataEnd}` },
+        values: { formula: `'🏆 Mejor récord'!$G$${recDataStart}:$G$${recDataEnd}` },
+        fill: { type: 'solid', color: '256D5B' }
+      });
+
+      chartRecord.legend = { position: 'bottom' };
+      wsRecord.addChart(chartRecord, 'A15:I30');
+    }
+
+    // ── Hoja 4: Resumen por grado ─────────────────────────────────────────────
+    const wsResumen = workbook.addWorksheet('📋 Resumen');
+    wsResumen.views = [{ showGridLines: false }];
+    wsResumen.mergeCells('A1:F1');
+    const resumenTitleCell = wsResumen.getCell('A1');
+    resumenTitleCell.value = 'RESUMEN POR GRADO Y CARRERA';
+    resumenTitleCell.font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
+    resumenTitleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF143C65' } };
+    resumenTitleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    wsResumen.getRow(1).height = 28;
+    wsResumen.addRow([]);
+
     wsResumen.columns = [
-      { header: 'Grado', key: 'grado', width: 8 }, { header: 'Carrera', key: 'carrera', width: 20 },
-      { header: 'Total asistencias', key: 'totalAsistencias', width: 18 },
-      { header: 'Total estudiantes', key: 'totalEstudiantes', width: 18 },
-      { header: 'Promedio asistencias', key: 'promedioAsistencias', width: 20 }
+      { header: 'Grado', key: 'grado', width: 10 },
+      { header: 'Carrera', key: 'carrera', width: 22 },
+      { header: 'Total asistencias', key: 'totalAsistencias', width: 20 },
+      { header: 'Total faltas', key: 'totalFaltas', width: 15 },
+      { header: 'Total estudiantes', key: 'totalEstudiantes', width: 20 },
+      { header: 'Promedio asistencias', key: 'promedioAsistencias', width: 22 }
     ];
-    wsResumen.getRow(1).eachCell(cell => { cell.style = headerStyle; });
-    resumenArray.forEach(row => wsResumen.addRow(row));
+    wsResumen.getRow(3).values = ['Grado','Carrera','Total asistencias','Total faltas','Total estudiantes','Promedio asistencias'];
+    wsResumen.getRow(3).eachCell(cell => { cell.style = headerStyle; });
+    wsResumen.getRow(3).height = 20;
+
+    resumenArray.forEach((item, idx) => {
+      const r = wsResumen.addRow([item.grado, item.carrera, item.totalAsistencias, item.totalFaltas, item.totalEstudiantes, parseFloat(item.promedioAsistencias)]);
+      r.eachCell(cell => { cell.style = idx % 2 === 0 ? dataStyle : altRowStyle; });
+    });
 
     const buffer = await workbook.xlsx.writeBuffer();
     const fileName = `estadisticas_${inicio}_a_${fin}_${Date.now()}.xlsx`;
@@ -592,6 +848,7 @@ const exportarEstadisticasExcel = async (req, res) => {
     if (uploadError) throw uploadError;
 
     const { data: urlData } = supabase.storage.from('reportes').getPublicUrl(fileName);
+    console.log('✅ Excel con gráficas generado:', fileName);
     res.json({ success: true, url: urlData.publicUrl });
   } catch (error) {
     console.error('❌ Error exportando estadísticas:', error);
