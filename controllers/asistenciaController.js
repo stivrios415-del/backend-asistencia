@@ -1,5 +1,80 @@
 const supabase = require('../config/supabase');
 const ExcelJS = require('exceljs');
+const JSZip = require('jszip');
+const XlsxChart = require('xlsx-chart');
+const xlsxChart = new XlsxChart();
+
+// ========== HELPER: generar gráfica como buffer ==========
+function generarGraficaBuffer(opts) {
+  return new Promise((resolve, reject) => {
+    xlsxChart.generate({ ...opts, type: 'base64' }, (err, result) => {
+      if (err) reject(err);
+      else resolve(Buffer.from(result, 'base64'));
+    });
+  });
+}
+
+// ========== HELPER: combinar workbook ExcelJS + gráficas xlsx-chart en un solo xlsx ==========
+// datosWorkbook: Buffer de ExcelJS (hojas de datos formateadas)
+// graficas: [{ buf: Buffer, nombre: string }]
+async function construirExcelConGraficas(datosWorkbook, graficas) {
+  const baseZip = await JSZip.loadAsync(datosWorkbook);
+
+  let wbXml = await baseZip.file('xl/workbook.xml').async('string');
+  let wbRels = await baseZip.file('xl/_rels/workbook.xml.rels').async('string');
+  let contentTypes = await baseZip.file('[Content_Types].xml').async('string');
+
+  const sheetMatches = wbXml.match(/<sheet /g) || [];
+  let sheetCount = sheetMatches.length;
+  let chartCount = 0;
+  let drawingCount = 0;
+  let maxRId = (wbRels.match(/Id="rId(\d+)"/g) || []).reduce((max, m) => {
+    const n = parseInt(m.match(/\d+/)[0]);
+    return n > max ? n : max;
+  }, 0);
+
+  for (const grafica of graficas) {
+    const srcZip = await JSZip.loadAsync(grafica.buf);
+    sheetCount++;
+    chartCount++;
+    drawingCount++;
+    maxRId++;
+
+    const sheetId = sheetCount;
+    const rId = `rId${maxRId}`;
+    const nombre = grafica.nombre || `Grafica${chartCount}`;
+
+    const chartXml    = await srcZip.file('xl/charts/chart1.xml').async('string');
+    const drawingXml  = await srcZip.file('xl/drawings/drawing1.xml').async('string');
+    const drawingRels = await srcZip.file('xl/drawings/_rels/drawing1.xml.rels').async('string');
+    const sheetXml    = await srcZip.file('xl/worksheets/sheet1.xml').async('string');
+    const sheetRels   = await srcZip.file('xl/worksheets/_rels/sheet1.xml.rels').async('string');
+
+    baseZip.file(`xl/charts/chart${chartCount}.xml`, chartXml);
+    baseZip.file(`xl/drawings/drawing${drawingCount}.xml`, drawingXml);
+    baseZip.file(`xl/drawings/_rels/drawing${drawingCount}.xml.rels`,
+      drawingRels.replace('chart1.xml', `chart${chartCount}.xml`));
+    baseZip.file(`xl/worksheets/sheet${sheetId}.xml`, sheetXml);
+    baseZip.file(`xl/worksheets/_rels/sheet${sheetId}.xml.rels`,
+      sheetRels.replace('drawing1.xml', `drawing${drawingCount}.xml`));
+
+    wbXml = wbXml.replace('</sheets>',
+      `<sheet name="${nombre}" sheetId="${sheetId}" r:id="${rId}"/></sheets>`);
+    wbRels = wbRels.replace('</Relationships>',
+      `<Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${sheetId}.xml"/></Relationships>`);
+    contentTypes = contentTypes.replace('</Types>',
+      `<Override PartName="/xl/worksheets/sheet${sheetId}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>` +
+      `<Override PartName="/xl/charts/chart${chartCount}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>` +
+      `<Override PartName="/xl/drawings/drawing${drawingCount}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>` +
+      '</Types>');
+  }
+
+  baseZip.file('xl/workbook.xml', wbXml);
+  baseZip.file('xl/_rels/workbook.xml.rels', wbRels);
+  baseZip.file('[Content_Types].xml', contentTypes);
+
+  return baseZip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+}
 
 // ========== NORMALIZAR TEXTO ==========
 function normalizarTexto(str) {
