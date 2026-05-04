@@ -1,79 +1,192 @@
 const supabase = require('../config/supabase');
 const ExcelJS = require('exceljs');
 const JSZip = require('jszip');
-const XlsxChart = require('xlsx-chart');
-const xlsxChart = new XlsxChart();
 
-// ========== HELPER: generar gráfica como buffer ==========
-function generarGraficaBuffer(opts) {
-  return new Promise((resolve, reject) => {
-    xlsxChart.generate({ ...opts, type: 'base64' }, (err, result) => {
-      if (err) reject(err);
-      else resolve(Buffer.from(result, 'base64'));
-    });
-  });
+// ========== HELPER: generar XML de gráfica de barras nativo para xlsx ==========
+// Genera el XML completo de un chart de barras compatible con Excel/LibreOffice
+function generarChartBarrasXml(series, titulo) {
+  // series = [{ nombre, valores: [num,...], categorias: [str,...] }]
+  const seriesXml = series.map((s, sIdx) => {
+    const valuesXml = s.valores.map((v, i) =>
+      `<a:v>${v}</a:v>`
+    ).join('');
+    const catsXml = s.categorias.map((c) =>
+      `<a:v>${escapeXml(c)}</a:v>`
+    ).join('');
+    const colores = ['143C65', 'E53E3E', '256D5B', 'F18F01', 'A23B72'];
+    const color = colores[sIdx % colores.length];
+    return `
+    <c:ser>
+      <c:idx val="${sIdx}"/>
+      <c:order val="${sIdx}"/>
+      <c:tx><c:strRef><c:f></c:f><c:strCache><c:ptCount val="1"/><c:pt idx="0"><c:v>${escapeXml(s.nombre)}</c:v></c:pt></c:strCache></c:strRef></c:tx>
+      <c:spPr><a:solidFill><a:srgbClr val="${color}"/></a:solidFill></c:spPr>
+      <c:cat><c:strRef><c:f></c:f><c:strCache><c:ptCount val="${s.categorias.length}"/>${s.categorias.map((c, i) => `<c:pt idx="${i}"><c:v>${escapeXml(c)}</c:v></c:pt>`).join('')}</c:strCache></c:strRef></c:cat>
+      <c:val><c:numRef><c:f></c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="${s.valores.length}"/>${s.valores.map((v, i) => `<c:pt idx="${i}"><c:v>${v}</c:v></c:pt>`).join('')}</c:numCache></c:numRef></c:val>
+    </c:ser>`;
+  }).join('');
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <c:autoTitleDeleted val="0"/>
+  <c:chart>
+    <c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>${escapeXml(titulo)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title>
+    <c:autoTitleDeleted val="0"/>
+    <c:plotArea>
+      <c:layout/>
+      <c:barChart>
+        <c:barDir val="col"/>
+        <c:grouping val="clustered"/>
+        <c:varyColors val="0"/>
+        ${seriesXml}
+        <c:axId val="1"/>
+        <c:axId val="2"/>
+      </c:barChart>
+      <c:catAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:crossAx val="2"/></c:catAx>
+      <c:valAx><c:axId val="2"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:crossAx val="1"/></c:valAx>
+    </c:plotArea>
+    <c:legend><c:legendPos val="b"/></c:legend>
+    <c:plotVisOnly val="1"/>
+  </c:chart>
+</c:chartSpace>`;
 }
 
-// ========== HELPER: combinar workbook ExcelJS + gráficas xlsx-chart en un solo xlsx ==========
-// datosWorkbook: Buffer de ExcelJS (hojas de datos formateadas)
-// graficas: [{ buf: Buffer, nombre: string }]
-async function construirExcelConGraficas(datosWorkbook, graficas) {
-  const baseZip = await JSZip.loadAsync(datosWorkbook);
+// ========== HELPER: generar XML de gráfica de pie ==========
+function generarChartPieXml(categorias, valores, titulo) {
+  const ptsCat = categorias.map((c, i) => `<c:pt idx="${i}"><c:v>${escapeXml(c)}</c:v></c:pt>`).join('');
+  const ptsVal = valores.map((v, i) => `<c:pt idx="${i}"><c:v>${v}</c:v></c:pt>`).join('');
 
-  let wbXml = await baseZip.file('xl/workbook.xml').async('string');
-  let wbRels = await baseZip.file('xl/_rels/workbook.xml.rels').async('string');
-  let contentTypes = await baseZip.file('[Content_Types].xml').async('string');
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <c:chart>
+    <c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>${escapeXml(titulo)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title>
+    <c:autoTitleDeleted val="0"/>
+    <c:plotArea>
+      <c:layout/>
+      <c:pieChart>
+        <c:varyColors val="1"/>
+        <c:ser>
+          <c:idx val="0"/><c:order val="0"/>
+          <c:dLbls><c:showLegendKey val="0"/><c:showVal val="0"/><c:showCatName val="1"/><c:showSerName val="0"/><c:showPercent val="1"/><c:showBubbleSize val="0"/></c:dLbls>
+          <c:cat><c:strRef><c:f></c:f><c:strCache><c:ptCount val="${categorias.length}"/>${ptsCat}</c:strCache></c:strRef></c:cat>
+          <c:val><c:numRef><c:f></c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="${valores.length}"/>${ptsVal}</c:numCache></c:numRef></c:val>
+        </c:ser>
+      </c:pieChart>
+    </c:plotArea>
+    <c:legend><c:legendPos val="r"/></c:legend>
+    <c:plotVisOnly val="1"/>
+  </c:chart>
+</c:chartSpace>`;
+}
+
+function escapeXml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+// ========== HELPER: inyectar gráficas XML directamente en el xlsx via JSZip ==========
+// Recibe un buffer ExcelJS y un array de gráficas { chartXml, nombre }
+async function inyectarGraficasEnXlsx(workbookBuffer, graficas) {
+  const zip = await JSZip.loadAsync(workbookBuffer);
+
+  let wbXml = await zip.file('xl/workbook.xml').async('string');
+  let wbRels = await zip.file('xl/_rels/workbook.xml.rels').async('string');
+  let contentTypes = await zip.file('[Content_Types].xml').async('string');
 
   const sheetMatches = wbXml.match(/<sheet /g) || [];
   let sheetCount = sheetMatches.length;
-  let chartCount = 0;
-  let drawingCount = 0;
   let maxRId = (wbRels.match(/Id="rId(\d+)"/g) || []).reduce((max, m) => {
     const n = parseInt(m.match(/\d+/)[0]);
     return n > max ? n : max;
   }, 0);
 
-  for (const grafica of graficas) {
-    const srcZip = await JSZip.loadAsync(grafica.buf);
+  graficas.forEach((grafica, idx) => {
     sheetCount++;
-    chartCount++;
-    drawingCount++;
     maxRId++;
-
+    const chartId = idx + 1;
+    const drawingId = idx + 1;
     const sheetId = sheetCount;
     const rId = `rId${maxRId}`;
-    const nombre = grafica.nombre || `Grafica${chartCount}`;
+    const nombre = grafica.nombre || `Grafica${chartId}`;
 
-    const chartXml    = await srcZip.file('xl/charts/chart1.xml').async('string');
-    const drawingXml  = await srcZip.file('xl/drawings/drawing1.xml').async('string');
-    const drawingRels = await srcZip.file('xl/drawings/_rels/drawing1.xml.rels').async('string');
-    const sheetXml    = await srcZip.file('xl/worksheets/sheet1.xml').async('string');
-    const sheetRels   = await srcZip.file('xl/worksheets/_rels/sheet1.xml.rels').async('string');
+    // XML de la hoja que contiene el drawing
+    const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheetData/>
+  <drawing r:id="rId1"/>
+</worksheet>`;
 
-    baseZip.file(`xl/charts/chart${chartCount}.xml`, chartXml);
-    baseZip.file(`xl/drawings/drawing${drawingCount}.xml`, drawingXml);
-    baseZip.file(`xl/drawings/_rels/drawing${drawingCount}.xml.rels`,
-      drawingRels.replace('chart1.xml', `chart${chartCount}.xml`));
-    baseZip.file(`xl/worksheets/sheet${sheetId}.xml`, sheetXml);
-    baseZip.file(`xl/worksheets/_rels/sheet${sheetId}.xml.rels`,
-      sheetRels.replace('drawing1.xml', `drawing${drawingCount}.xml`));
+    // XML del drawing que posiciona la gráfica
+    const drawingXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
+  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <xdr:absoluteAnchor>
+    <xdr:pos x="0" y="0"/>
+    <xdr:ext cx="6858000" cy="4572000"/>
+    <xdr:graphicFrame macro="">
+      <xdr:nvGraphicFramePr>
+        <xdr:cNvPr id="${chartId + 2}" name="Chart ${chartId}"/>
+        <xdr:cNvGraphicFramePr/>
+      </xdr:nvGraphicFramePr>
+      <xdr:xfrm><a:off x="0" y="0"/><a:ext cx="6858000" cy="4572000"/></xdr:xfrm>
+      <a:graphic>
+        <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">
+          <c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" r:id="rId1"/>
+        </a:graphicData>
+      </a:graphic>
+    </xdr:graphicFrame>
+    <xdr:clientData/>
+  </xdr:absoluteAnchor>
+</xdr:wsDr>`;
 
+    const drawingRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart${chartId}.xml"/>
+</Relationships>`;
+
+    const sheetRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing${drawingId}.xml"/>
+</Relationships>`;
+
+    // Guardar archivos en el ZIP
+    zip.file(`xl/charts/chart${chartId}.xml`, grafica.chartXml);
+    zip.file(`xl/drawings/drawing${drawingId}.xml`, drawingXml);
+    zip.file(`xl/drawings/_rels/drawing${drawingId}.xml.rels`, drawingRelsXml);
+    zip.file(`xl/worksheets/sheet${sheetId}.xml`, sheetXml);
+    zip.file(`xl/worksheets/_rels/sheet${sheetId}.xml.rels`, sheetRelsXml);
+
+    // Actualizar workbook.xml
     wbXml = wbXml.replace('</sheets>',
       `<sheet name="${nombre}" sheetId="${sheetId}" r:id="${rId}"/></sheets>`);
+
+    // Actualizar workbook.xml.rels
     wbRels = wbRels.replace('</Relationships>',
       `<Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${sheetId}.xml"/></Relationships>`);
+
+    // Actualizar [Content_Types].xml
     contentTypes = contentTypes.replace('</Types>',
       `<Override PartName="/xl/worksheets/sheet${sheetId}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>` +
-      `<Override PartName="/xl/charts/chart${chartCount}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>` +
-      `<Override PartName="/xl/drawings/drawing${drawingCount}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>` +
+      `<Override PartName="/xl/charts/chart${chartId}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>` +
+      `<Override PartName="/xl/drawings/drawing${drawingId}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>` +
       '</Types>');
-  }
+  });
 
-  baseZip.file('xl/workbook.xml', wbXml);
-  baseZip.file('xl/_rels/workbook.xml.rels', wbRels);
-  baseZip.file('[Content_Types].xml', contentTypes);
+  zip.file('xl/workbook.xml', wbXml);
+  zip.file('xl/_rels/workbook.xml.rels', wbRels);
+  zip.file('[Content_Types].xml', contentTypes);
 
-  return baseZip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 
 // ========== NORMALIZAR TEXTO ==========
@@ -699,267 +812,103 @@ const exportarEstadisticasExcel = async (req, res) => {
       font: { bold: true, color: { argb: 'FFFFFFFF' } },
       fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF143C65' } },
       alignment: { horizontal: 'center', vertical: 'middle' },
-      border: {
-        top: { style: 'thin' }, bottom: { style: 'thin' },
-        left: { style: 'thin' }, right: { style: 'thin' }
-      }
-    };
-    const subHeaderStyle = {
-      font: { bold: true, color: { argb: 'FFFFFFFF' } },
-      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF256D5B' } },
-      alignment: { horizontal: 'center' }
+      border: { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } }
     };
     const dataStyle = {
-      border: {
-        top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
-        bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
-        left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
-        right: { style: 'thin', color: { argb: 'FFE2E8F0' } }
-      }
+      border: { top: { style: 'thin', color: { argb: 'FFE2E8F0' } }, bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } }, left: { style: 'thin', color: { argb: 'FFE2E8F0' } }, right: { style: 'thin', color: { argb: 'FFE2E8F0' } } }
     };
-    const altRowStyle = {
-      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF7FAFC' } },
-      border: dataStyle.border
-    };
-
+    const altRowStyle = { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF7FAFC' } }, border: dataStyle.border };
     const colsEst = [
-      { header: 'Cédula', key: 'cedula', width: 16 },
-      { header: 'Nombre', key: 'nombre', width: 22 },
-      { header: 'Apellido', key: 'apellido', width: 22 },
-      { header: 'Grado', key: 'grado', width: 8 },
-      { header: 'Sección', key: 'seccion', width: 10 },
-      { header: 'Carrera', key: 'carrera', width: 20 },
-      { header: 'Asistencias', key: 'asistencias', width: 13 },
-      { header: 'Faltas', key: 'faltas', width: 10 },
+      { header: 'Cédula', key: 'cedula', width: 16 }, { header: 'Nombre', key: 'nombre', width: 22 },
+      { header: 'Apellido', key: 'apellido', width: 22 }, { header: 'Grado', key: 'grado', width: 8 },
+      { header: 'Sección', key: 'seccion', width: 10 }, { header: 'Carrera', key: 'carrera', width: 20 },
+      { header: 'Asistencias', key: 'asistencias', width: 13 }, { header: 'Faltas', key: 'faltas', width: 10 },
       { header: 'Total días', key: 'totalDias', width: 12 }
     ];
 
-    // ── Hoja 1: Dashboard con gráficas ────────────────────────────────────────
-    const wsDash = workbook.addWorksheet('📊 Dashboard');
+    // ── Hoja 1: Dashboard (tabla de resumen) ──────────────────────────────────
+    const wsDash = workbook.addWorksheet('Dashboard');
     wsDash.views = [{ showGridLines: false }];
-
-    // Título principal
-    wsDash.mergeCells('A1:I1');
+    wsDash.mergeCells('A1:E1');
     const titleCell = wsDash.getCell('A1');
     titleCell.value = `ESTADÍSTICAS DE ASISTENCIA — ${inicio} al ${fin}`;
-    titleCell.font = { bold: true, size: 16, color: { argb: 'FFFFFFFF' } };
+    titleCell.font = { bold: true, size: 15, color: { argb: 'FFFFFFFF' } };
     titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF143C65' } };
     titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
-    wsDash.getRow(1).height = 35;
-
-    // Subtítulo
-    wsDash.mergeCells('A2:I2');
+    wsDash.getRow(1).height = 32;
+    wsDash.mergeCells('A2:E2');
     const subCell = wsDash.getCell('A2');
-    subCell.value = `Total estudiantes: ${estudiantes.length}  |  Total días del período: ${totalDias}  |  Total asistencias registradas: ${asistencias.length}`;
+    subCell.value = `Estudiantes: ${estudiantes.length}  |  Días del período: ${totalDias}  |  Asistencias totales: ${asistencias.length}`;
     subCell.font = { size: 11, color: { argb: 'FFFFFFFF' }, italic: true };
     subCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF256D5B' } };
     subCell.alignment = { horizontal: 'center', vertical: 'middle' };
-    wsDash.getRow(2).height = 22;
-
-    wsDash.addRow([]); // fila 3 vacía
-
-    // Tabla de datos para la gráfica de barras (empieza en fila 4)
-    wsDash.getCell('A4').value = 'Grado / Carrera';
-    wsDash.getCell('B4').value = 'Total Asistencias';
-    wsDash.getCell('C4').value = 'Total Faltas';
-    wsDash.getCell('D4').value = 'Promedio Asist.';
-    wsDash.getCell('E4').value = 'Total Estudiantes';
-    ['A4','B4','C4','D4','E4'].forEach(addr => {
-      wsDash.getCell(addr).style = headerStyle;
-    });
+    wsDash.getRow(2).height = 20;
+    wsDash.addRow([]);
+    wsDash.getRow(4).values = ['Grado / Carrera', 'Total Asistencias', 'Total Faltas', 'Promedio', 'Estudiantes'];
+    wsDash.getRow(4).eachCell(cell => { cell.style = headerStyle; });
     wsDash.getRow(4).height = 20;
-
-    let fila = 5;
+    wsDash.getColumn('A').width = 25; wsDash.getColumn('B').width = 20;
+    wsDash.getColumn('C').width = 15; wsDash.getColumn('D').width = 15; wsDash.getColumn('E').width = 15;
     resumenArray.forEach((item, idx) => {
-      const etiqueta = `${item.grado}° ${item.carrera}`;
-      wsDash.getCell(`A${fila}`).value = etiqueta;
-      wsDash.getCell(`B${fila}`).value = item.totalAsistencias;
-      wsDash.getCell(`C${fila}`).value = item.totalFaltas;
-      wsDash.getCell(`D${fila}`).value = parseFloat(item.promedioAsistencias);
-      wsDash.getCell(`E${fila}`).value = item.totalEstudiantes;
-      const rowStyle = idx % 2 === 0 ? dataStyle : altRowStyle;
-      ['A','B','C','D','E'].forEach(col => {
-        wsDash.getCell(`${col}${fila}`).style = rowStyle;
-      });
-      fila++;
+      const r = wsDash.addRow([`${item.grado}° ${item.carrera}`, item.totalAsistencias, item.totalFaltas, parseFloat(item.promedioAsistencias), item.totalEstudiantes]);
+      r.eachCell(cell => { cell.style = idx % 2 === 0 ? dataStyle : altRowStyle; });
+      r.getCell(2).font = { bold: true, color: { argb: 'FF256D5B' } };
+      r.getCell(3).font = { bold: true, color: { argb: 'FFE53E3E' } };
     });
-
-    // Ajustar anchos de columnas del dashboard
-    wsDash.getColumn('A').width = 25;
-    wsDash.getColumn('B').width = 20;
-    wsDash.getColumn('C').width = 15;
-    wsDash.getColumn('D').width = 18;
-    wsDash.getColumn('E').width = 18;
-
-    const lastDataRow = fila - 1;
-
-    // ── GRÁFICA 1: Barras — Asistencias vs Faltas por grado/carrera ──────────
-    if (resumenArray.length > 0) {
-      const chartBar = workbook.addChart('bar', 'clustered');
-      chartBar.title = { name: 'Asistencias vs Faltas por Grado y Carrera' };
-      chartBar.style = 10;
-      chartBar.displayBlanksAs = 'zero';
-
-      chartBar.addSeries({
-        name: { formula: `'📊 Dashboard'!$B$4` },
-        categories: { formula: `'📊 Dashboard'!$A$5:$A$${lastDataRow}` },
-        values: { formula: `'📊 Dashboard'!$B$5:$B$${lastDataRow}` },
-        fill: { type: 'solid', color: '143C65' }
-      });
-
-      chartBar.addSeries({
-        name: { formula: `'📊 Dashboard'!$C$4` },
-        categories: { formula: `'📊 Dashboard'!$A$5:$A$${lastDataRow}` },
-        values: { formula: `'📊 Dashboard'!$C$5:$C$${lastDataRow}` },
-        fill: { type: 'solid', color: 'E53E3E' }
-      });
-
-      chartBar.plotArea = {
-        valAxis: [{ title: 'Cantidad' }],
-        catAxis: [{ title: 'Grado / Carrera' }]
-      };
-
-      chartBar.legend = { position: 'bottom' };
-      chartBar.view = {
-        x: { formula: `'📊 Dashboard'!$G$4` },
-        y: { formula: `'📊 Dashboard'!$G$4` },
-        width: 5486400,
-        height: 3200400
-      };
-
-      wsDash.addImage ? null : null; // placeholder
-      wsDash.addChart(chartBar, 'G4:O20');
-    }
-
-    // ── GRÁFICA 2: Pie — Distribución de asistencias por carrera ─────────────
-    if (resumenArray.length > 0) {
-      const chartPie = workbook.addChart('pie', 'pie');
-      chartPie.title = { name: 'Distribución de Asistencias por Carrera' };
-      chartPie.style = 26;
-      chartPie.displayBlanksAs = 'zero';
-
-      chartPie.addSeries({
-        name: 'Asistencias',
-        categories: { formula: `'📊 Dashboard'!$A$5:$A$${lastDataRow}` },
-        values: { formula: `'📊 Dashboard'!$B$5:$B$${lastDataRow}` },
-        dataLabels: { showPercent: true, showCatName: true, separator: '\n' }
-      });
-
-      chartPie.legend = { position: 'right' };
-      wsDash.addChart(chartPie, 'G22:O38');
-    }
 
     // ── Hoja 2: Más faltas ────────────────────────────────────────────────────
-    const wsFaltas = workbook.addWorksheet('❌ Más faltas');
+    const wsFaltas = workbook.addWorksheet('Mas faltas');
     wsFaltas.views = [{ showGridLines: false }];
     wsFaltas.mergeCells('A1:I1');
-    const faltasTitleCell = wsFaltas.getCell('A1');
-    faltasTitleCell.value = 'TOP 10 — ALUMNOS CON MÁS FALTAS';
-    faltasTitleCell.font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
-    faltasTitleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE53E3E' } };
-    faltasTitleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    const fc = wsFaltas.getCell('A1');
+    fc.value = 'TOP 10 — ALUMNOS CON MÁS FALTAS';
+    fc.font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
+    fc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE53E3E' } };
+    fc.alignment = { horizontal: 'center', vertical: 'middle' };
     wsFaltas.getRow(1).height = 28;
     wsFaltas.addRow([]);
-
     wsFaltas.columns = colsEst;
     wsFaltas.getRow(3).values = colsEst.map(c => c.header);
     wsFaltas.getRow(3).eachCell(cell => { cell.style = headerStyle; });
-    wsFaltas.getRow(3).height = 20;
-
     masFaltas.forEach((est, idx) => {
       const r = wsFaltas.addRow([est.cedula, est.nombre, est.apellido, est.grado, est.seccion, est.carrera, est.asistencias, est.faltas, est.totalDias]);
       r.eachCell(cell => { cell.style = idx % 2 === 0 ? dataStyle : altRowStyle; });
-      // Colorear en rojo si faltas >= 3
-      if (est.faltas >= 3) {
-        r.getCell(8).font = { bold: true, color: { argb: 'FFCC0000' } };
-      }
+      if (est.faltas >= 3) r.getCell(8).font = { bold: true, color: { argb: 'FFCC0000' } };
     });
 
-    // Gráfica de barras para faltas
-    if (masFaltas.length > 0) {
-      const faltasDataStart = 4;
-      const faltasDataEnd = faltasDataStart + masFaltas.length - 1;
-
-      const chartFaltas = workbook.addChart('bar', 'clustered');
-      chartFaltas.title = { name: 'Top 10 Alumnos con Más Faltas' };
-      chartFaltas.style = 10;
-
-      chartFaltas.addSeries({
-        name: 'Faltas',
-        categories: { formula: `'❌ Más faltas'!$B$${faltasDataStart}:$B$${faltasDataEnd}` },
-        values: { formula: `'❌ Más faltas'!$H$${faltasDataStart}:$H$${faltasDataEnd}` },
-        fill: { type: 'solid', color: 'E53E3E' }
-      });
-
-      chartFaltas.addSeries({
-        name: 'Asistencias',
-        categories: { formula: `'❌ Más faltas'!$B$${faltasDataStart}:$B$${faltasDataEnd}` },
-        values: { formula: `'❌ Más faltas'!$G$${faltasDataStart}:$G$${faltasDataEnd}` },
-        fill: { type: 'solid', color: '143C65' }
-      });
-
-      chartFaltas.legend = { position: 'bottom' };
-      wsFaltas.addChart(chartFaltas, 'A15:I30');
-    }
-
     // ── Hoja 3: Mejor récord ──────────────────────────────────────────────────
-    const wsRecord = workbook.addWorksheet('🏆 Mejor récord');
+    const wsRecord = workbook.addWorksheet('Mejor record');
     wsRecord.views = [{ showGridLines: false }];
     wsRecord.mergeCells('A1:I1');
-    const recordTitleCell = wsRecord.getCell('A1');
-    recordTitleCell.value = 'TOP 10 — ALUMNOS CON MEJOR RÉCORD DE ASISTENCIA';
-    recordTitleCell.font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
-    recordTitleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF256D5B' } };
-    recordTitleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    const rc = wsRecord.getCell('A1');
+    rc.value = 'TOP 10 — ALUMNOS CON MEJOR RÉCORD DE ASISTENCIA';
+    rc.font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
+    rc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF256D5B' } };
+    rc.alignment = { horizontal: 'center', vertical: 'middle' };
     wsRecord.getRow(1).height = 28;
     wsRecord.addRow([]);
-
     wsRecord.columns = colsEst;
     wsRecord.getRow(3).values = colsEst.map(c => c.header);
     wsRecord.getRow(3).eachCell(cell => { cell.style = headerStyle; });
-    wsRecord.getRow(3).height = 20;
-
     mejorRecord.forEach((est, idx) => {
       const r = wsRecord.addRow([est.cedula, est.nombre, est.apellido, est.grado, est.seccion, est.carrera, est.asistencias, est.faltas, est.totalDias]);
       r.eachCell(cell => { cell.style = idx % 2 === 0 ? dataStyle : altRowStyle; });
       r.getCell(7).font = { bold: true, color: { argb: 'FF256D5B' } };
     });
 
-    // Gráfica para mejor récord
-    if (mejorRecord.length > 0) {
-      const recDataStart = 4;
-      const recDataEnd = recDataStart + mejorRecord.length - 1;
-
-      const chartRecord = workbook.addChart('bar', 'clustered');
-      chartRecord.title = { name: 'Top 10 Alumnos con Mejor Récord' };
-      chartRecord.style = 10;
-
-      chartRecord.addSeries({
-        name: 'Asistencias',
-        categories: { formula: `'🏆 Mejor récord'!$B$${recDataStart}:$B$${recDataEnd}` },
-        values: { formula: `'🏆 Mejor récord'!$G$${recDataStart}:$G$${recDataEnd}` },
-        fill: { type: 'solid', color: '256D5B' }
-      });
-
-      chartRecord.legend = { position: 'bottom' };
-      wsRecord.addChart(chartRecord, 'A15:I30');
-    }
-
     // ── Hoja 4: Resumen por grado ─────────────────────────────────────────────
-    const wsResumen = workbook.addWorksheet('📋 Resumen');
+    const wsResumen = workbook.addWorksheet('Resumen');
     wsResumen.views = [{ showGridLines: false }];
     wsResumen.mergeCells('A1:F1');
-    const resumenTitleCell = wsResumen.getCell('A1');
-    resumenTitleCell.value = 'RESUMEN POR GRADO Y CARRERA';
-    resumenTitleCell.font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
-    resumenTitleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF143C65' } };
-    resumenTitleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    const rsc = wsResumen.getCell('A1');
+    rsc.value = 'RESUMEN POR GRADO Y CARRERA';
+    rsc.font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
+    rsc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF143C65' } };
+    rsc.alignment = { horizontal: 'center', vertical: 'middle' };
     wsResumen.getRow(1).height = 28;
     wsResumen.addRow([]);
-
     wsResumen.columns = [
-      { header: 'Grado', key: 'grado', width: 10 },
-      { header: 'Carrera', key: 'carrera', width: 22 },
+      { header: 'Grado', key: 'grado', width: 10 }, { header: 'Carrera', key: 'carrera', width: 22 },
       { header: 'Total asistencias', key: 'totalAsistencias', width: 20 },
       { header: 'Total faltas', key: 'totalFaltas', width: 15 },
       { header: 'Total estudiantes', key: 'totalEstudiantes', width: 20 },
@@ -967,22 +916,63 @@ const exportarEstadisticasExcel = async (req, res) => {
     ];
     wsResumen.getRow(3).values = ['Grado','Carrera','Total asistencias','Total faltas','Total estudiantes','Promedio asistencias'];
     wsResumen.getRow(3).eachCell(cell => { cell.style = headerStyle; });
-    wsResumen.getRow(3).height = 20;
-
     resumenArray.forEach((item, idx) => {
       const r = wsResumen.addRow([item.grado, item.carrera, item.totalAsistencias, item.totalFaltas, item.totalEstudiantes, parseFloat(item.promedioAsistencias)]);
       r.eachCell(cell => { cell.style = idx % 2 === 0 ? dataStyle : altRowStyle; });
     });
 
-    const buffer = await workbook.xlsx.writeBuffer();
+    // ── Generar buffer base y agregar gráficas XML ────────────────────────────
+    const bufferBase = await workbook.xlsx.writeBuffer();
+
+    // Preparar gráficas como XML puro (sin xlsx-chart ni dependencias externas)
+    const graficas = [];
+    if (resumenArray.length > 0) {
+      const cats = resumenArray.map(r => `${r.grado}° ${r.carrera}`);
+      graficas.push({
+        nombre: 'Graf. Asistencias',
+        chartXml: generarChartBarrasXml([
+          { nombre: 'Asistencias', categorias: cats, valores: resumenArray.map(r => r.totalAsistencias) },
+          { nombre: 'Faltas', categorias: cats, valores: resumenArray.map(r => r.totalFaltas) }
+        ], 'Asistencias vs Faltas por Grado y Carrera')
+      });
+      graficas.push({
+        nombre: 'Graf. Distribucion',
+        chartXml: generarChartPieXml(cats, resumenArray.map(r => r.totalAsistencias), 'Distribución de Asistencias')
+      });
+    }
+    if (masFaltas.length > 0) {
+      const names = masFaltas.map(e => `${e.nombre} ${e.apellido}`);
+      graficas.push({
+        nombre: 'Graf. Mas Faltas',
+        chartXml: generarChartBarrasXml([
+          { nombre: 'Faltas', categorias: names, valores: masFaltas.map(e => e.faltas) },
+          { nombre: 'Asistencias', categorias: names, valores: masFaltas.map(e => e.asistencias) }
+        ], 'Top 10 Alumnos con Más Faltas')
+      });
+    }
+    if (mejorRecord.length > 0) {
+      const names = mejorRecord.map(e => `${e.nombre} ${e.apellido}`);
+      graficas.push({
+        nombre: 'Graf. Mejor Record',
+        chartXml: generarChartBarrasXml([
+          { nombre: 'Asistencias', categorias: names, valores: mejorRecord.map(e => e.asistencias) }
+        ], 'Top 10 Alumnos con Mejor Récord')
+      });
+    }
+
+    // Inyectar gráficas en el xlsx via JSZip (sin dependencias externas)
+    const finalBuffer = graficas.length > 0
+      ? await inyectarGraficasEnXlsx(bufferBase, graficas)
+      : bufferBase;
+
     const fileName = `estadisticas_${inicio}_a_${fin}_${Date.now()}.xlsx`;
-    const { error: uploadError } = await supabase.storage.from('reportes').upload(fileName, buffer, {
+    const { error: uploadError } = await supabase.storage.from('reportes').upload(fileName, finalBuffer, {
       contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     });
     if (uploadError) throw uploadError;
 
     const { data: urlData } = supabase.storage.from('reportes').getPublicUrl(fileName);
-    console.log('✅ Excel con gráficas generado:', fileName);
+    console.log('✅ Excel con gráficas XML generado:', fileName);
     res.json({ success: true, url: urlData.publicUrl });
   } catch (error) {
     console.error('❌ Error exportando estadísticas:', error);
