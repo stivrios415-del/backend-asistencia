@@ -235,7 +235,6 @@ async function obtenerFiltrosProfesor(profesorEmail) {
 
   if (!profesorFinal) {
     console.error('❌ Profesor no encontrado para email:', profesorEmail);
-    // Devolver [] en lugar de throw para evitar 500 — el frontend verá datos vacíos
     return [];
   }
 
@@ -260,7 +259,6 @@ async function obtenerIdsMateriaProfesor(profesorEmail) {
   const { data: profesor } = await supabase
     .from('profesores').select('id').eq('email', profesorEmail.trim()).single();
   if (!profesor) {
-    // Intentar con lowercase
     const { data: p2 } = await supabase
       .from('profesores').select('id').eq('email', profesorEmail.trim().toLowerCase()).single();
     if (!p2) return [];
@@ -281,13 +279,9 @@ async function obtenerEstudiantesFiltrados(filtros) {
     .order('apellido', { ascending: true });
   if (error) throw error;
 
-  // null = admin, trae todos
   if (filtros === null) return data;
-
-  // [] = profesor sin asignaciones
   if (filtros.length === 0) return [];
 
-  // Filtrar en memoria usando normalización para evitar problemas de mayúsculas/acentos
   return data.filter(est => {
     const gradoEst = normalizarTexto(String(est.grado));
     const carreraEst = normalizarTexto(est.carrera);
@@ -323,7 +317,6 @@ const registrarAsistencia = async (req, res) => {
   const hoy = new Date().toISOString().split('T')[0];
   const ahora = new Date().toLocaleTimeString('en-GB', { hour12: false });
 
-  // Validar duplicado POR MATERIA — el mismo alumno puede asistir a varias clases el mismo día
   const { data: yaRegistro } = await supabase.from('asistencia').select('id')
     .eq('cedula', cedula).eq('fecha', hoy).eq('materia_id', materiaId).maybeSingle();
   if (yaRegistro) return res.status(400).json({ error: 'Este estudiante ya registró asistencia en esta clase hoy', estudiante });
@@ -528,6 +521,17 @@ const exportarReporteCompletoExcel = async (req, res) => {
     const headerStyle = { font: { bold: true }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF8FF' } } };
     let currentRow = 1;
 
+    // ── NUEVO: Encabezado "INSTITUTO EVANGELICO BETHEL" ──────────────────────
+    worksheet.addRow(['INSTITUTO EVANGELICO BETHEL']);
+    worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
+    const institutoRow = worksheet.getRow(currentRow);
+    institutoRow.getCell(1).font = { bold: true, size: 16, color: { argb: 'FF143C65' } };
+    institutoRow.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+    institutoRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9EAF7' } };
+    institutoRow.height = 28;
+    currentRow++;
+    // ─────────────────────────────────────────────────────────────────────────
+
     const fechaLegible = new Date(fecha + 'T12:00:00').toLocaleDateString('es-ES', {
       weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'America/Tegucigalpa'
     });
@@ -602,7 +606,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
         const nombreProf = mat.profesores?.nombre || 'Sin profesor';
         const totalAlumnos = grupo.asistencias.length;
 
-        // Título de la clase con profesor
         worksheet.addRow([`${mat.nombre || mat.carrera || 'Clase'} — Grado ${mat.grado}° Sección ${mat.seccion}`]);
         worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
         const titleRow = worksheet.getRow(currentRow);
@@ -610,7 +613,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
         titleRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9EAF7' } };
         currentRow++;
 
-        // Línea del profesor y total
         worksheet.addRow([`👤 Profesor: ${nombreProf}   |   👥 Total presentes: ${totalAlumnos}`]);
         worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
         worksheet.getRow(currentRow).font = { italic: true, size: 10, color: { argb: 'FF555555' } };
@@ -679,11 +681,9 @@ const getEstadisticas = async (req, res) => {
     }
     console.log('📅 Rango:', inicio, '->', fin);
 
-    // 1. Obtener filtros
     const filtros = await obtenerFiltrosProfesor(profesorEmail);
     console.log('🎯 Filtros obtenidos:', JSON.stringify(filtros));
 
-    // 2. Obtener estudiantes
     const estudiantes = await obtenerEstudiantesFiltrados(filtros);
     console.log('👥 Estudiantes encontrados:', estudiantes.length);
 
@@ -692,7 +692,6 @@ const getEstadisticas = async (req, res) => {
       return res.json({ masFaltas: [], mejorRecord: [], totalDias: 0, resumenGradoCarrera: [] });
     }
 
-    // 3. Obtener asistencias
     let asistencias = [];
     const idsMaterias = await obtenerIdsMateriaProfesor(profesorEmail);
     console.log('📚 IDs de materias:', idsMaterias);
@@ -826,27 +825,34 @@ const exportarEstadisticasExcel = async (req, res) => {
       { header: 'Total días', key: 'totalDias', width: 12 }
     ];
 
-    // ── Hoja 1: Dashboard (tabla de resumen) ──────────────────────────────────
+    // ── Hoja 1: Dashboard ─────────────────────────────────────────────────────
     const wsDash = workbook.addWorksheet('Dashboard');
     wsDash.views = [{ showGridLines: false }];
     wsDash.mergeCells('A1:E1');
-    const titleCell = wsDash.getCell('A1');
+    const institutoCell = wsDash.getCell('A1');
+    institutoCell.value = 'INSTITUTO EVANGELICO BETHEL';
+    institutoCell.font = { bold: true, size: 16, color: { argb: 'FF143C65' } };
+    institutoCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9EAF7' } };
+    institutoCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    wsDash.getRow(1).height = 30;
+    wsDash.mergeCells('A2:E2');
+    const titleCell = wsDash.getCell('A2');
     titleCell.value = `ESTADÍSTICAS DE ASISTENCIA — ${inicio} al ${fin}`;
     titleCell.font = { bold: true, size: 15, color: { argb: 'FFFFFFFF' } };
     titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF143C65' } };
     titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
-    wsDash.getRow(1).height = 32;
-    wsDash.mergeCells('A2:E2');
-    const subCell = wsDash.getCell('A2');
+    wsDash.getRow(2).height = 32;
+    wsDash.mergeCells('A3:E3');
+    const subCell = wsDash.getCell('A3');
     subCell.value = `Estudiantes: ${estudiantes.length}  |  Días del período: ${totalDias}  |  Asistencias totales: ${asistencias.length}`;
     subCell.font = { size: 11, color: { argb: 'FFFFFFFF' }, italic: true };
     subCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF256D5B' } };
     subCell.alignment = { horizontal: 'center', vertical: 'middle' };
-    wsDash.getRow(2).height = 20;
+    wsDash.getRow(3).height = 20;
     wsDash.addRow([]);
-    wsDash.getRow(4).values = ['Grado / Carrera', 'Total Asistencias', 'Total Faltas', 'Promedio', 'Estudiantes'];
-    wsDash.getRow(4).eachCell(cell => { cell.style = headerStyle; });
-    wsDash.getRow(4).height = 20;
+    wsDash.getRow(5).values = ['Grado / Carrera', 'Total Asistencias', 'Total Faltas', 'Promedio', 'Estudiantes'];
+    wsDash.getRow(5).eachCell(cell => { cell.style = headerStyle; });
+    wsDash.getRow(5).height = 20;
     wsDash.getColumn('A').width = 25; wsDash.getColumn('B').width = 20;
     wsDash.getColumn('C').width = 15; wsDash.getColumn('D').width = 15; wsDash.getColumn('E').width = 15;
     resumenArray.forEach((item, idx) => {
@@ -924,7 +930,6 @@ const exportarEstadisticasExcel = async (req, res) => {
     // ── Generar buffer base y agregar gráficas XML ────────────────────────────
     const bufferBase = await workbook.xlsx.writeBuffer();
 
-    // Preparar gráficas como XML puro (sin xlsx-chart ni dependencias externas)
     const graficas = [];
     if (resumenArray.length > 0) {
       const cats = resumenArray.map(r => `${r.grado}° ${r.carrera}`);
@@ -960,7 +965,6 @@ const exportarEstadisticasExcel = async (req, res) => {
       });
     }
 
-    // Inyectar gráficas en el xlsx via JSZip (sin dependencias externas)
     const finalBuffer = graficas.length > 0
       ? await inyectarGraficasEnXlsx(bufferBase, graficas)
       : bufferBase;
