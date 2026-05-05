@@ -125,20 +125,20 @@ async function inyectarGraficasEnXlsx(workbookBuffer, graficas) {
   <drawing r:id="rId1"/>
 </worksheet>`;
 
-    // XML del drawing que posiciona la gráfica
+    // XML del drawing que posiciona la gráfica — tamaño grande para que se vea bien
     const drawingXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
   xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
   xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <xdr:absoluteAnchor>
-    <xdr:pos x="0" y="0"/>
-    <xdr:ext cx="6858000" cy="4572000"/>
+    <xdr:pos x="228600" y="228600"/>
+    <xdr:ext cx="9144000" cy="6858000"/>
     <xdr:graphicFrame macro="">
       <xdr:nvGraphicFramePr>
         <xdr:cNvPr id="${chartId + 2}" name="Chart ${chartId}"/>
         <xdr:cNvGraphicFramePr/>
       </xdr:nvGraphicFramePr>
-      <xdr:xfrm><a:off x="0" y="0"/><a:ext cx="6858000" cy="4572000"/></xdr:xfrm>
+      <xdr:xfrm><a:off x="228600" y="228600"/><a:ext cx="9144000" cy="6858000"/></xdr:xfrm>
       <a:graphic>
         <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">
           <c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" r:id="rId1"/>
@@ -281,14 +281,16 @@ async function obtenerEstudiantesFiltrados(filtros) {
     .order('apellido', { ascending: true });
   if (error) throw error;
 
-  // null = admin, trae todos
-  if (filtros === null) return data;
+  // null = admin, trae todos pero excluye los sin carrera
+  if (filtros === null) return data.filter(est => est.carrera && est.carrera.trim() !== '');
 
   // [] = profesor sin asignaciones
   if (filtros.length === 0) return [];
 
   // Filtrar en memoria usando normalización para evitar problemas de mayúsculas/acentos
+  // También excluir estudiantes sin carrera asignada
   return data.filter(est => {
+    if (!est.carrera || est.carrera.trim() === '') return false; // sin carrera = excluir
     const gradoEst = normalizarTexto(String(est.grado));
     const carreraEst = normalizarTexto(est.carrera);
     return filtros.some(f =>
@@ -722,8 +724,17 @@ const getEstadisticas = async (req, res) => {
       return { ...est, asistencias: count, faltas: faltas > 0 ? faltas : 0, totalDias };
     });
 
-    const masFaltas = [...estadisticasArr].sort((a, b) => b.faltas - a.faltas).slice(0, 10);
-    const mejorRecord = [...estadisticasArr].sort((a, b) => b.asistencias - a.asistencias).slice(0, 10);
+    // Solo alumnos con al menos 1 falta real
+    const masFaltas = [...estadisticasArr]
+      .filter(est => est.faltas > 0)
+      .sort((a, b) => b.faltas - a.faltas)
+      .slice(0, 10);
+
+    // Solo alumnos con al menos 1 asistencia registrada
+    const mejorRecord = [...estadisticasArr]
+      .filter(est => est.asistencias > 0)
+      .sort((a, b) => b.asistencias - a.asistencias)
+      .slice(0, 10);
 
     const resumenMap = {};
     estadisticasArr.forEach(est => {
