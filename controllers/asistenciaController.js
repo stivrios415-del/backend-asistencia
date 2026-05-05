@@ -2,87 +2,7 @@ const supabase = require('../config/supabase');
 const ExcelJS = require('exceljs');
 const JSZip = require('jszip');
 
-// ========== HELPER: generar XML de gráfica de barras nativo para xlsx ==========
-// Genera el XML completo de un chart de barras compatible con Excel/LibreOffice
-function generarChartBarrasXml(series, titulo) {
-  // series = [{ nombre, valores: [num,...], categorias: [str,...] }]
-  const seriesXml = series.map((s, sIdx) => {
-    const valuesXml = s.valores.map((v, i) =>
-      `<a:v>${v}</a:v>`
-    ).join('');
-    const catsXml = s.categorias.map((c) =>
-      `<a:v>${escapeXml(c)}</a:v>`
-    ).join('');
-    const colores = ['143C65', 'E53E3E', '256D5B', 'F18F01', 'A23B72'];
-    const color = colores[sIdx % colores.length];
-    return `
-    <c:ser>
-      <c:idx val="${sIdx}"/>
-      <c:order val="${sIdx}"/>
-      <c:tx><c:strRef><c:f></c:f><c:strCache><c:ptCount val="1"/><c:pt idx="0"><c:v>${escapeXml(s.nombre)}</c:v></c:pt></c:strCache></c:strRef></c:tx>
-      <c:spPr><a:solidFill><a:srgbClr val="${color}"/></a:solidFill></c:spPr>
-      <c:cat><c:strRef><c:f></c:f><c:strCache><c:ptCount val="${s.categorias.length}"/>${s.categorias.map((c, i) => `<c:pt idx="${i}"><c:v>${escapeXml(c)}</c:v></c:pt>`).join('')}</c:strCache></c:strRef></c:cat>
-      <c:val><c:numRef><c:f></c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="${s.valores.length}"/>${s.valores.map((v, i) => `<c:pt idx="${i}"><c:v>${v}</c:v></c:pt>`).join('')}</c:numCache></c:numRef></c:val>
-    </c:ser>`;
-  }).join('');
-
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
-  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
-  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <c:autoTitleDeleted val="0"/>
-  <c:chart>
-    <c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>${escapeXml(titulo)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title>
-    <c:autoTitleDeleted val="0"/>
-    <c:plotArea>
-      <c:layout/>
-      <c:barChart>
-        <c:barDir val="col"/>
-        <c:grouping val="clustered"/>
-        <c:varyColors val="0"/>
-        ${seriesXml}
-        <c:axId val="1"/>
-        <c:axId val="2"/>
-      </c:barChart>
-      <c:catAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:crossAx val="2"/></c:catAx>
-      <c:valAx><c:axId val="2"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:crossAx val="1"/></c:valAx>
-    </c:plotArea>
-    <c:legend><c:legendPos val="b"/></c:legend>
-    <c:plotVisOnly val="1"/>
-  </c:chart>
-</c:chartSpace>`;
-}
-
-// ========== HELPER: generar XML de gráfica de pie ==========
-function generarChartPieXml(categorias, valores, titulo) {
-  const ptsCat = categorias.map((c, i) => `<c:pt idx="${i}"><c:v>${escapeXml(c)}</c:v></c:pt>`).join('');
-  const ptsVal = valores.map((v, i) => `<c:pt idx="${i}"><c:v>${v}</c:v></c:pt>`).join('');
-
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
-  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
-  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <c:chart>
-    <c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>${escapeXml(titulo)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title>
-    <c:autoTitleDeleted val="0"/>
-    <c:plotArea>
-      <c:layout/>
-      <c:pieChart>
-        <c:varyColors val="1"/>
-        <c:ser>
-          <c:idx val="0"/><c:order val="0"/>
-          <c:dLbls><c:showLegendKey val="0"/><c:showVal val="0"/><c:showCatName val="1"/><c:showSerName val="0"/><c:showPercent val="1"/><c:showBubbleSize val="0"/></c:dLbls>
-          <c:cat><c:strRef><c:f></c:f><c:strCache><c:ptCount val="${categorias.length}"/>${ptsCat}</c:strCache></c:strRef></c:cat>
-          <c:val><c:numRef><c:f></c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="${valores.length}"/>${ptsVal}</c:numCache></c:numRef></c:val>
-        </c:ser>
-      </c:pieChart>
-    </c:plotArea>
-    <c:legend><c:legendPos val="r"/></c:legend>
-    <c:plotVisOnly val="1"/>
-  </c:chart>
-</c:chartSpace>`;
-}
-
+// ========== HELPER: escapar XML ==========
 function escapeXml(str) {
   return String(str || '')
     .replace(/&/g, '&amp;')
@@ -90,6 +10,176 @@ function escapeXml(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
+}
+
+// ========== HELPER: generar XML de gráfica de barras ==========
+function generarChartBarrasXml(series, titulo) {
+  const colores = ['143C65', 'E53E3E', '256D5B', 'F18F01', 'A23B72'];
+
+  const seriesXml = series.map((s, sIdx) => {
+    const color = colores[sIdx % colores.length];
+    const ptsCat = s.categorias.map((c, i) =>
+      `<c:pt idx="${i}"><c:v>${escapeXml(String(c))}</c:v></c:pt>`
+    ).join('');
+    const ptsVal = s.valores.map((v, i) =>
+      `<c:pt idx="${i}"><c:v>${Number(v)}</c:v></c:pt>`
+    ).join('');
+
+    return `<c:ser>
+      <c:idx val="${sIdx}"/>
+      <c:order val="${sIdx}"/>
+      <c:tx>
+        <c:strRef><c:f/><c:strCache>
+          <c:ptCount val="1"/>
+          <c:pt idx="0"><c:v>${escapeXml(s.nombre)}</c:v></c:pt>
+        </c:strCache></c:strRef>
+      </c:tx>
+      <c:spPr>
+        <a:solidFill><a:srgbClr val="${color}"/></a:solidFill>
+        <a:ln><a:noFill/></a:ln>
+      </c:spPr>
+      <c:invertIfNegative val="0"/>
+      <c:cat>
+        <c:strRef><c:f/><c:strCache>
+          <c:ptCount val="${s.categorias.length}"/>
+          ${ptsCat}
+        </c:strCache></c:strRef>
+      </c:cat>
+      <c:val>
+        <c:numRef><c:f/><c:numCache>
+          <c:formatCode>General</c:formatCode>
+          <c:ptCount val="${s.valores.length}"/>
+          ${ptsVal}
+        </c:numCache></c:numRef>
+      </c:val>
+    </c:ser>`;
+  }).join('');
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <c:chart>
+    <c:title>
+      <c:tx><c:rich><a:bodyPr/><a:lstStyle/>
+        <a:p><a:pPr><a:defRPr b="1" sz="1400"/></a:pPr>
+          <a:r><a:rPr b="1"/><a:t>${escapeXml(titulo)}</a:t></a:r>
+        </a:p>
+      </c:rich></c:tx>
+      <c:overlay val="0"/>
+    </c:title>
+    <c:autoTitleDeleted val="0"/>
+    <c:plotArea>
+      <c:layout/>
+      <c:barChart>
+        <c:barDir val="col"/>
+        <c:grouping val="clustered"/>
+        <c:varyColors val="0"/>
+        <c:gapWidth val="150"/>
+        ${seriesXml}
+        <c:axId val="10001"/>
+        <c:axId val="10002"/>
+      </c:barChart>
+      <c:catAx>
+        <c:axId val="10001"/>
+        <c:scaling><c:orientation val="minMax"/></c:scaling>
+        <c:delete val="0"/>
+        <c:axPos val="b"/>
+        <c:numFmt formatCode="General" sourceLinked="0"/>
+        <c:tickLblPos val="nextTo"/>
+        <c:spPr><a:ln><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln></c:spPr>
+        <c:txPr>
+          <a:bodyPr rot="-2700000" vert="horz"/>
+          <a:lstStyle/>
+          <a:p><a:pPr><a:defRPr sz="900" b="0"/></a:pPr></a:p>
+        </c:txPr>
+        <c:crossAx val="10002"/>
+        <c:auto val="1"/>
+        <c:lblAlgn val="ctr"/>
+        <c:lblOffset val="100"/>
+        <c:noMultiLvlLbl val="0"/>
+      </c:catAx>
+      <c:valAx>
+        <c:axId val="10002"/>
+        <c:scaling><c:orientation val="minMax"/></c:scaling>
+        <c:delete val="0"/>
+        <c:axPos val="l"/>
+        <c:numFmt formatCode="General" sourceLinked="0"/>
+        <c:tickLblPos val="nextTo"/>
+        <c:crossAx val="10001"/>
+        <c:crosses val="autoZero"/>
+        <c:crossBetween val="between"/>
+      </c:valAx>
+    </c:plotArea>
+    <c:legend><c:legendPos val="b"/><c:overlay val="0"/></c:legend>
+    <c:plotVisOnly val="1"/>
+    <c:dispBlanksAs val="zero"/>
+  </c:chart>
+</c:chartSpace>`;
+}
+
+// ========== HELPER: generar XML de gráfica de pie ==========
+function generarChartPieXml(categorias, valores, titulo) {
+  const ptsCat = categorias.map((c, i) =>
+    `<c:pt idx="${i}"><c:v>${escapeXml(String(c))}</c:v></c:pt>`
+  ).join('');
+  const ptsVal = valores.map((v, i) =>
+    `<c:pt idx="${i}"><c:v>${Number(v)}</c:v></c:pt>`
+  ).join('');
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <c:chart>
+    <c:title>
+      <c:tx><c:rich><a:bodyPr/><a:lstStyle/>
+        <a:p><a:pPr><a:defRPr b="1" sz="1400"/></a:pPr>
+          <a:r><a:rPr b="1"/><a:t>${escapeXml(titulo)}</a:t></a:r>
+        </a:p>
+      </c:rich></c:tx>
+      <c:overlay val="0"/>
+    </c:title>
+    <c:autoTitleDeleted val="0"/>
+    <c:plotArea>
+      <c:layout/>
+      <c:pieChart>
+        <c:varyColors val="1"/>
+        <c:ser>
+          <c:idx val="0"/>
+          <c:order val="0"/>
+          <c:dLbls>
+            <c:numFmt formatCode="0%" sourceLinked="0"/>
+            <c:spPr><a:noFill/></c:spPr>
+            <c:showLegendKey val="0"/>
+            <c:showVal val="0"/>
+            <c:showCatName val="1"/>
+            <c:showSerName val="0"/>
+            <c:showPercent val="1"/>
+            <c:showBubbleSize val="0"/>
+            <c:separator> - </c:separator>
+          </c:dLbls>
+          <c:cat>
+            <c:strRef><c:f/><c:strCache>
+              <c:ptCount val="${categorias.length}"/>
+              ${ptsCat}
+            </c:strCache></c:strRef>
+          </c:cat>
+          <c:val>
+            <c:numRef><c:f/><c:numCache>
+              <c:formatCode>General</c:formatCode>
+              <c:ptCount val="${valores.length}"/>
+              ${ptsVal}
+            </c:numCache></c:numRef>
+          </c:val>
+        </c:ser>
+      </c:pieChart>
+    </c:plotArea>
+    <c:legend><c:legendPos val="r"/><c:overlay val="0"/></c:legend>
+    <c:plotVisOnly val="1"/>
+    <c:dispBlanksAs val="zero"/>
+  </c:chart>
+</c:chartSpace>`;
 }
 
 // ========== HELPER: inyectar gráficas XML directamente en el xlsx via JSZip ==========
