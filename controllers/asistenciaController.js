@@ -1,4 +1,4 @@
-const supabase = require('../config/supabase');
+const { supabase } = require('../config/supabase');
 const ExcelJS = require('exceljs');
 const JSZip = require('jszip');
 
