@@ -2,34 +2,36 @@ const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_KEY;
+const supabaseAnonKey = process.env.SUPABASE_KEY;        // ← usamos la variable SUPABASE_KEY como anon key
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY;
 
-// Validación y logs más detallados
-if (!supabaseUrl) {
-  console.error('❌ FALTA: SUPABASE_URL no está definida en el archivo .env');
+if (!supabaseUrl || !supabaseAnonKey) {
+  console.error('❌ Faltan variables de entorno: SUPABASE_URL o SUPABASE_KEY');
   process.exit(1);
 }
-if (!supabaseKey) {
-  console.error('❌ FALTA: SUPABASE_KEY no está definida en el archivo .env');
-  process.exit(1);
+if (!supabaseServiceKey) {
+  console.warn('⚠️ SUPABASE_SERVICE_KEY no definida. No se podrán crear usuarios desde el panel de admin.');
 }
 
 console.log('🔌 Conectando a Supabase...');
 console.log(`📡 URL: ${supabaseUrl}`);
-console.log(`🔑 Key: ${supabaseKey.substring(0, 15)}... (${supabaseKey.length} caracteres)`);
 
-const supabase = createClient(supabaseUrl, supabaseKey, {
-  auth: {
-    persistSession: false,    // No guardar sesión en backend
-    autoRefreshToken: false,  // No refrescar token automáticamente
-    detectSessionInUrl: false
-  },
-  global: {
-    headers: { 'x-application-name': 'asistencia-backend' }
-  }
+// Cliente normal (anon) – para consultas de todos los controladores
+const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  global: { headers: { 'x-application-name': 'asistencia-backend' } }
 });
 
-// Verificación rápida de conectividad (opcional)
+// Cliente de administración (service_role) – solo para crear usuarios
+let supabaseAdmin = null;
+if (supabaseServiceKey) {
+  supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    global: { headers: { 'x-application-name': 'asistencia-backend-admin' } }
+  });
+}
+
+// Verificación rápida (opcional)
 (async () => {
   const { error } = await supabase.from('estudiantes').select('count', { count: 'exact', head: true });
   if (error) {
@@ -40,4 +42,4 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
   }
 })();
 
-module.exports = supabase;
+module.exports = { supabase, supabaseAdmin };
