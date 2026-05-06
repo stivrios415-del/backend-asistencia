@@ -31,6 +31,7 @@ const getProfesores = async (req, res) => {
 };
 
 // Registrar un nuevo profesor (solo administrador)
+// Crea el usuario en Supabase Auth y luego en la tabla profesores
 const registrarProfesor = async (req, res) => {
   const { email, nombre, password } = req.body;
   const userId = req.user.id;
@@ -40,25 +41,32 @@ const registrarProfesor = async (req, res) => {
     return res.status(403).json({ error: 'No tienes permiso para registrar profesores' });
   }
   
-  // NOTA: En un entorno real, deberías crear el usuario en Supabase Auth usando
-  // la API de administración (supabase.auth.admin.createUser) y luego insertar
-  // en la tabla 'profesores' con el ID generado. Aquí se asume que el usuario
-  // ya existe o que la creación se maneja externamente.
   try {
-    const { data, error } = await supabase
+    // 1. Crear usuario en Supabase Auth usando service_role
+    const { data: authUser, error: authError } = await supabase.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,  // Cambia a false si quieres que el usuario confirme su email
+      user_metadata: { nombre, rol: 'profesor', institucion_id }
+    });
+    if (authError) throw authError;
+    
+    // 2. Insertar el registro en la tabla profesores (con el mismo ID de auth)
+    const { error: insertError } = await supabase
       .from('profesores')
-      .insert([{
+      .insert({
+        id: authUser.user.id,
         email,
         nombre,
-        password_hash: 'pendiente', // normalmente no se guarda en texto plano
         activo: true,
-        institucion_id: institucion_id, // asignar la misma institución del admin
+        institucion_id,
         rol: 'profesor'
-      }])
-      .select();
-    if (error) throw error;
-    res.json({ message: 'Profesor registrado', profesor: data[0] });
+      });
+    if (insertError) throw insertError;
+    
+    res.json({ message: 'Profesor registrado exitosamente', profesor: { id: authUser.user.id, email, nombre } });
   } catch (error) {
+    console.error('Error registrando profesor:', error);
     res.status(500).json({ error: error.message });
   }
 };
