@@ -40,15 +40,10 @@ const registrarProfesor = async (req, res) => {
     return res.status(403).json({ error: 'No tienes permiso para registrar profesores' });
   }
   
-  // Crear usuario en auth (Supabase)
-  // Nota: Esto solo funciona si se usa la API de administración de Supabase con service_role key.
-  // En un entorno real, podrías llamar a supabase.auth.admin.createUser.
-  // Para simplificar, asumimos que ya tienes un endpoint que maneja la creación de usuarios.
-  
-  // Aquí deberías crear el usuario en auth y luego insertar en la tabla profesores
-  // con el institucion_id del administrador.
-  
-  // Ejemplo simplificado (sin crear usuario en auth)
+  // NOTA: En un entorno real, deberías crear el usuario en Supabase Auth usando
+  // la API de administración (supabase.auth.admin.createUser) y luego insertar
+  // en la tabla 'profesores' con el ID generado. Aquí se asume que el usuario
+  // ya existe o que la creación se maneja externamente.
   try {
     const { data, error } = await supabase
       .from('profesores')
