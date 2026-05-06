@@ -729,8 +729,7 @@ const exportarEstadisticasExcel = async (req, res) => {
       inicio = new Date(hoy.getFullYear(), hoy.getMonth(), 1).toISOString().split('T')[0];
       fin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).toISOString().split('T')[0];
     }
-
-    // Obtener datos (mismo código que antes, omito repetición por brevedad)
+    // Obtener datos (misma lógica que getEstadisticas)
     const filtros = await obtenerFiltrosProfesor(profesorEmail);
     const estudiantes = await obtenerEstudiantesFiltrados(filtros);
     let asistencias = [];
@@ -769,10 +768,16 @@ const exportarEstadisticasExcel = async (req, res) => {
       if (String(a.grado) !== String(b.grado)) return String(a.grado).localeCompare(String(b.grado));
       return a.carrera.localeCompare(b.carrera);
     });
-
     const workbook = new ExcelJS.Workbook();
-    const headerStyle = { font: { bold: true, color: { argb: 'FFFFFFFF' } }, fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF143C65' } }, alignment: { horizontal: 'center', vertical: 'middle' }, border: { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } } };
-    const dataStyle = { border: { top: { style: 'thin', color: { argb: 'FFE2E8F0' } }, bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } }, left: { style: 'thin', color: { argb: 'FFE2E8F0' } }, right: { style: 'thin', color: { argb: 'FFE2E8F0' } } } };
+    const headerStyle = {
+      font: { bold: true, color: { argb: 'FFFFFFFF' } },
+      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF143C65' } },
+      alignment: { horizontal: 'center', vertical: 'middle' },
+      border: { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } }
+    };
+    const dataStyle = {
+      border: { top: { style: 'thin', color: { argb: 'FFE2E8F0' } }, bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } }, left: { style: 'thin', color: { argb: 'FFE2E8F0' } }, right: { style: 'thin', color: { argb: 'FFE2E8F0' } } }
+    };
     const altRowStyle = { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF7FAFC' } }, border: dataStyle.border };
     const colsEst = [
       { header: 'Cédula', key: 'cedula', width: 16 }, { header: 'Nombre', key: 'nombre', width: 22 },
@@ -781,7 +786,6 @@ const exportarEstadisticasExcel = async (req, res) => {
       { header: 'Asistencias', key: 'asistencias', width: 13 }, { header: 'Faltas', key: 'faltas', width: 10 },
       { header: 'Total días', key: 'totalDias', width: 12 }
     ];
-
     // Hoja Dashboard
     const wsDash = workbook.addWorksheet('Dashboard');
     wsDash.mergeCells('A1:E1');
@@ -801,7 +805,6 @@ const exportarEstadisticasExcel = async (req, res) => {
       r.getCell(2).font = { bold: true, color: { argb: 'FF256D5B' } };
       r.getCell(3).font = { bold: true, color: { argb: 'FFE53E3E' } };
     });
-
     // Hoja Más faltas
     const wsFaltas = workbook.addWorksheet('Mas faltas');
     wsFaltas.mergeCells('A1:I1');
@@ -817,7 +820,6 @@ const exportarEstadisticasExcel = async (req, res) => {
       r.eachCell(cell => { cell.style = idx % 2 === 0 ? dataStyle : altRowStyle; });
       if (est.faltas >= 3) r.getCell(8).font = { bold: true, color: { argb: 'FFCC0000' } };
     });
-
     // Hoja Mejor récord
     const wsRecord = workbook.addWorksheet('Mejor record');
     wsRecord.mergeCells('A1:I1');
@@ -833,7 +835,6 @@ const exportarEstadisticasExcel = async (req, res) => {
       r.eachCell(cell => { cell.style = idx % 2 === 0 ? dataStyle : altRowStyle; });
       r.getCell(7).font = { bold: true, color: { argb: 'FF256D5B' } };
     });
-
     // Hoja Resumen
     const wsResumen = workbook.addWorksheet('Resumen');
     wsResumen.mergeCells('A1:F1');
@@ -854,8 +855,7 @@ const exportarEstadisticasExcel = async (req, res) => {
       const r = wsResumen.addRow([item.grado, item.carrera, item.totalAsistencias, item.totalFaltas, item.totalEstudiantes, parseFloat(item.promedioAsistencias)]);
       r.eachCell(cell => { cell.style = idx % 2 === 0 ? dataStyle : altRowStyle; });
     });
-
-    // Generar buffer y gráficas
+    // Gráficas
     const bufferBase = await workbook.xlsx.writeBuffer();
     const graficas = [];
     if (resumenArray.length > 0) {
@@ -894,17 +894,14 @@ const exportarEstadisticasExcel = async (req, res) => {
     const finalBuffer = graficas.length > 0
       ? await inyectarGraficasEnXlsx(bufferBase, graficas)
       : bufferBase;
-
     const fileName = `estadisticas_${inicio}_a_${fin}_${Date.now()}.xlsx`;
     const { error: uploadError } = await supabase.storage.from('reportes').upload(fileName, finalBuffer, {
       contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     });
     if (uploadError) throw uploadError;
-
     const { data: urlData } = supabase.storage.from('reportes').getPublicUrl(fileName);
     const archivo_url = urlData.publicUrl;
-
-    // ✅ GUARDAR EN estadisticas_generadas
+    // Guardar en estadisticas_generadas
     try {
       const { error: insertError } = await supabase
         .from('estadisticas_generadas')
@@ -921,7 +918,6 @@ const exportarEstadisticasExcel = async (req, res) => {
     } catch (metaErr) {
       console.error('❌ No se pudo guardar en estadisticas_generadas:', metaErr.message);
     }
-
     res.json({ success: true, url: archivo_url });
   } catch (error) {
     console.error('❌ Error exportando estadísticas:', error);
