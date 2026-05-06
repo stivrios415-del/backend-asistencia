@@ -1,4 +1,4 @@
-const supabase = require('../config/supabase');
+const { supabase } = require('../config/supabase');
 const { parseExcel } = require('../utils/excelParser');
 
 // ========== HELPER: obtener perfil del usuario (rol e institución) ==========
