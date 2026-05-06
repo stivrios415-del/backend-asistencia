@@ -1,5 +1,6 @@
 // profesoresController.js
 const supabase = require('../config/supabase');
+const { supabase, supabaseAdmin } = require('../config/supabase');
 
 // Función auxiliar para obtener el perfil del usuario autenticado
 async function getPerfil(userId) {
@@ -31,6 +32,7 @@ const getProfesores = async (req, res) => {
 };
 
 // Registrar un nuevo profesor (solo administrador)
+
 // Crea el usuario en Supabase Auth y luego en la tabla profesores
 const registrarProfesor = async (req, res) => {
   const { email, nombre, password } = req.body;
@@ -70,6 +72,16 @@ const registrarProfesor = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+if (!supabaseAdmin) {
+  return res.status(500).json({ error: 'El servidor no tiene configurada la clave de administración' });
+}
+
+const { data: authUser, error: authError } = await supabaseAdmin.auth.admin.createUser({
+  email,
+  password,
+  email_confirm: true,     // o false si quieres verificación por correo
+  user_metadata: { nombre, rol: 'profesor', institucion_id }
+});
 
 // Activar/desactivar profesor (admin)
 const toggleActivo = async (req, res) => {
