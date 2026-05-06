@@ -1,6 +1,9 @@
 const express = require('express');
 const router = express.Router();
+const { verificarProfesor } = require('../middleware/auth');
 const asistenciaController = require('../controllers/asistenciaController');
+
+router.use(verificarProfesor);
 
 router.post('/', asistenciaController.registrarAsistencia);
 router.get('/hoy', asistenciaController.getAsistenciaHoy);
