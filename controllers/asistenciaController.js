@@ -281,7 +281,8 @@ async function contarFaltasEnMes(cedula, año, mes) {
 }
 
 // ========== HELPER: obtener filtros grado/carrera del profesor ==========
-async function obtenerFiltrosProfesor(profesorEmail) {
+// (ahora acepta institucion_id para filtrar asignaciones)
+async function obtenerFiltrosProfesor(profesorEmail, institucion_id) {
   if (!profesorEmail || profesorEmail === 'all' || profesorEmail === '') return null;
   const { data: profesor, error: errProf } = await supabase
     .from('profesores').select('id, nombre').eq('email', profesorEmail.trim().toLowerCase()).single();
@@ -292,14 +293,16 @@ async function obtenerFiltrosProfesor(profesorEmail) {
     profesorFinal = p2;
   }
   if (!profesorFinal) return [];
-  const { data: asignaciones, error: errAsig } = await supabase
-    .from('profesor_asignaciones').select('grado, carrera').eq('profesor_id', profesorFinal.id);
+  let query = supabase.from('profesor_asignaciones').select('grado, carrera').eq('profesor_id', profesorFinal.id);
+  if (institucion_id) query = query.eq('institucion_id', institucion_id);
+  const { data: asignaciones, error: errAsig } = await query;
   if (errAsig) return [];
   return asignaciones || [];
 }
 
 // ========== HELPER: obtener IDs de materias del profesor ==========
-async function obtenerIdsMateriaProfesor(profesorEmail) {
+// (ahora filtra por institucion_id)
+async function obtenerIdsMateriaProfesor(profesorEmail, institucion_id) {
   if (!profesorEmail || profesorEmail === 'all' || profesorEmail === '') return null;
   const { data: profesor } = await supabase
     .from('profesores').select('id').eq('email', profesorEmail.trim()).single();
@@ -307,19 +310,26 @@ async function obtenerIdsMateriaProfesor(profesorEmail) {
     const { data: p2 } = await supabase
       .from('profesores').select('id').eq('email', profesorEmail.trim().toLowerCase()).single();
     if (!p2) return [];
-    const { data: materias } = await supabase.from('materias').select('id').eq('profesor_id', p2.id);
+    let query = supabase.from('materias').select('id').eq('profesor_id', p2.id);
+    if (institucion_id) query = query.eq('institucion_id', institucion_id);
+    const { data: materias } = await query;
     return materias ? materias.map(m => m.id) : [];
   }
-  const { data: materias } = await supabase.from('materias').select('id').eq('profesor_id', profesor.id);
+  let query = supabase.from('materias').select('id').eq('profesor_id', profesor.id);
+  if (institucion_id) query = query.eq('institucion_id', institucion_id);
+  const { data: materias } = await query;
   return materias ? materias.map(m => m.id) : [];
 }
 
 // ========== HELPER: obtener estudiantes filtrados ==========
-async function obtenerEstudiantesFiltrados(filtros) {
-  const { data, error } = await supabase
+// (ahora filtra por institucion_id)
+async function obtenerEstudiantesFiltrados(filtros, institucion_id) {
+  let query = supabase
     .from('estudiantes')
     .select('cedula, nombre, apellido, grado, seccion, carrera')
     .order('apellido', { ascending: true });
+  if (institucion_id) query = query.eq('institucion_id', institucion_id);
+  const { data, error } = await query;
   if (error) throw error;
   if (filtros === null) return data.filter(est => est.carrera && est.carrera.trim() !== '');
   if (filtros.length === 0) return [];
@@ -337,6 +347,7 @@ async function obtenerEstudiantesFiltrados(filtros) {
 // ========== REGISTRAR ASISTENCIA ==========
 const registrarAsistencia = async (req, res) => {
   const { cedula, materiaId } = req.body;
+  const institucion_id = req.user.institucion_id;  // desde middleware
   if (!cedula) return res.status(400).json({ error: 'Cédula no proporcionada' });
   if (!materiaId) return res.status(400).json({ error: 'Debe especificar la materia/clase' });
   const { data: materia, error: errMateria } = await supabase
@@ -358,7 +369,7 @@ const registrarAsistencia = async (req, res) => {
     .eq('cedula', cedula).eq('fecha', hoy).eq('materia_id', materiaId).maybeSingle();
   if (yaRegistro) return res.status(400).json({ error: 'Este estudiante ya registró asistencia en esta clase hoy', estudiante });
   const { error: errAsistencia } = await supabase.from('asistencia')
-    .insert([{ cedula, fecha: hoy, hora: ahora, materia_id: materiaId }]);
+    .insert([{ cedula, fecha: hoy, hora: ahora, materia_id: materiaId, institucion_id }]);
   if (errAsistencia) return res.status(500).json({ error: 'Error al registrar asistencia: ' + errAsistencia.message });
   res.json({
     message: 'Asistencia registrada exitosamente',
@@ -377,17 +388,22 @@ const getAsistenciaHoy = async (req, res) => {
   const añoActual = new Date().getFullYear();
   const mesActual = new Date().getMonth() + 1;
   const { profesorEmail } = req.query;
+  const institucion_id = req.user.institucion_id;
   if (!profesorEmail) return res.status(400).json({ error: 'Se necesita el email del profesor' });
   const { data: profesor, error: errProf } = await supabase
     .from('profesores').select('id').eq('email', profesorEmail).single();
   if (errProf || !profesor) return res.status(404).json({ error: 'Profesor no encontrado' });
-  const { data: materias } = await supabase.from('materias').select('id').eq('profesor_id', profesor.id);
+  let queryMaterias = supabase.from('materias').select('id').eq('profesor_id', profesor.id);
+  if (institucion_id) queryMaterias = queryMaterias.eq('institucion_id', institucion_id);
+  const { data: materias } = await queryMaterias;
   if (!materias || materias.length === 0) return res.json([]);
-  const { data, error } = await supabase.from('asistencia').select(`
+  let queryAsistencia = supabase.from('asistencia').select(`
     id, fecha, hora, materia_id,
     estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url),
     materias (nombre)
   `).eq('fecha', hoy).in('materia_id', materias.map(m => m.id));
+  if (institucion_id) queryAsistencia = queryAsistencia.eq('institucion_id', institucion_id);
+  const { data, error } = await queryAsistencia;
   if (error) return res.status(400).json({ error: error.message });
   const result = await Promise.all(data.map(async item => ({
     id: item.id, fecha: item.fecha, hora: item.hora,
@@ -402,10 +418,13 @@ const getAsistenciaHoy = async (req, res) => {
 // ========== ASISTENCIA POR FECHA ==========
 const getAsistenciaByFecha = async (req, res) => {
   const { fecha } = req.params;
-  const { data, error } = await supabase.from('asistencia').select(`
+  const institucion_id = req.user.institucion_id;
+  let query = supabase.from('asistencia').select(`
     id, fecha, hora,
-    estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
+    estudantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
   `).eq('fecha', fecha);
+  if (institucion_id) query = query.eq('institucion_id', institucion_id);
+  const { data, error } = await query;
   if (error) return res.status(400).json({ error: error.message });
   res.json(data);
 };
@@ -413,11 +432,14 @@ const getAsistenciaByFecha = async (req, res) => {
 // ========== ASISTENCIA POR GRADO/SECCIÓN ==========
 const getAsistenciaPorGrado = async (req, res) => {
   const { grado, seccion, fecha } = req.query;
+  const institucion_id = req.user.institucion_id;
   const fechaFiltro = fecha || new Date().toISOString().split('T')[0];
-  const { data, error } = await supabase.from('asistencia').select(`
+  let query = supabase.from('asistencia').select(`
     id, fecha, hora,
     estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)
   `).eq('fecha', fechaFiltro);
+  if (institucion_id) query = query.eq('institucion_id', institucion_id);
+  const { data, error } = await query;
   if (error) return res.status(400).json({ error: error.message });
   let filtrados = data;
   if (grado) filtrados = filtrados.filter(a => a.estudiantes?.grado === grado);
@@ -428,7 +450,10 @@ const getAsistenciaPorGrado = async (req, res) => {
 // ========== LIMPIAR ASISTENCIA DEL DÍA ==========
 const limpiarAsistenciaHoy = async (req, res) => {
   const hoy = new Date().toISOString().split('T')[0];
-  const { error } = await supabase.from('asistencia').delete().eq('fecha', hoy);
+  const institucion_id = req.user.institucion_id;
+  let query = supabase.from('asistencia').delete().eq('fecha', hoy);
+  if (institucion_id) query = query.eq('institucion_id', institucion_id);
+  const { error } = await query;
   if (error) return res.status(400).json({ error: error.message });
   res.json({ message: 'Asistencia del día limpiada' });
 };
@@ -436,6 +461,7 @@ const limpiarAsistenciaHoy = async (req, res) => {
 // ========== REPORTE JSON POR RANGO ==========
 const getReporteAsistencia = async (req, res) => {
   const { fechaInicio, fechaFin, profesorEmail } = req.query;
+  const institucion_id = req.user.institucion_id;
   let query = supabase.from('asistencia').select(`
     id, fecha, hora, materia_id,
     estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url),
@@ -445,10 +471,11 @@ const getReporteAsistencia = async (req, res) => {
   else if (fechaInicio) query = query.gte('fecha', fechaInicio);
   else if (fechaFin) query = query.lte('fecha', fechaFin);
   if (profesorEmail && profesorEmail !== 'all' && profesorEmail !== '') {
-    const idsMaterias = await obtenerIdsMateriaProfesor(profesorEmail);
+    const idsMaterias = await obtenerIdsMateriaProfesor(profesorEmail, institucion_id);
     if (!idsMaterias || idsMaterias.length === 0) return res.json([]);
     query = query.in('materia_id', idsMaterias);
   }
+  if (institucion_id) query = query.eq('institucion_id', institucion_id);
   const { data, error } = await query.order('fecha', { ascending: false });
   if (error) return res.status(400).json({ error: error.message });
   res.json(data.map(item => ({ ...item, materia_nombre: item.materias?.nombre || 'Sin materia' })));
@@ -457,10 +484,13 @@ const getReporteAsistencia = async (req, res) => {
 // ========== EXPORTAR EXCEL SIMPLE (REPORTES DE ASISTENCIA) ==========
 const exportarReporteExcel = async (req, res) => {
   const { fechaInicio, fechaFin, usuario } = req.query;
+  const institucion_id = req.user.institucion_id;
   if (!fechaInicio || !fechaFin) return res.status(400).json({ error: 'Debe proporcionar fechaInicio y fechaFin' });
-  const { data, error } = await supabase.from('asistencia').select(`
+  let query = supabase.from('asistencia').select(`
     id, fecha, hora, estudiantes (cedula, nombre, apellido, grado, seccion)
   `).gte('fecha', fechaInicio).lte('fecha', fechaFin).order('fecha', { ascending: false });
+  if (institucion_id) query = query.eq('institucion_id', institucion_id);
+  const { data, error } = await query;
   if (error) return res.status(400).json({ error: error.message });
   const workbook = new ExcelJS.Workbook();
   const ws = workbook.addWorksheet('Reporte Asistencia');
@@ -485,7 +515,7 @@ const exportarReporteExcel = async (req, res) => {
   const { data: urlData } = supabase.storage.from('reportes').getPublicUrl(fileName);
   await supabase.from('reportes_generados').insert([{
     fecha_inicio: fechaInicio, fecha_fin: fechaFin,
-    archivo_url: urlData.publicUrl, usuario: usuario || 'profesor',
+    archivo_url: urlData.publicUrl, usuario: usuario || 'profesor', institucion_id
   }]);
   res.json({ success: true, url: urlData.publicUrl });
 };
@@ -493,6 +523,7 @@ const exportarReporteExcel = async (req, res) => {
 // ========== EXPORTAR REPORTE COMPLETO POR CLASE ==========
 const exportarReporteCompletoExcel = async (req, res) => {
   const { fecha, usuario, nombreProfesor, grado, seccion, profesorEmail } = req.query;
+  const institucion_id = req.user.institucion_id;
   if (!fecha) return res.status(400).json({ error: 'Debe proporcionar una fecha (YYYY-MM-DD)' });
   const subirExcelVacio = async (mensaje) => {
     const wb = new ExcelJS.Workbook();
@@ -511,9 +542,10 @@ const exportarReporteCompletoExcel = async (req, res) => {
         profesores:profesor_id (nombre)
       )
     `).eq('fecha', fecha);
+    if (institucion_id) queryAsistencias = queryAsistencias.eq('institucion_id', institucion_id);
     const filtrarPorProfesor = profesorEmail && profesorEmail !== 'all' && profesorEmail !== '';
     if (filtrarPorProfesor) {
-      const idsMaterias = await obtenerIdsMateriaProfesor(profesorEmail);
+      const idsMaterias = await obtenerIdsMateriaProfesor(profesorEmail, institucion_id);
       if (!idsMaterias || idsMaterias.length === 0) {
         const url = await subirExcelVacio('No hay asistencias para este profesor en esta fecha.');
         return res.json({ success: true, url });
@@ -630,6 +662,7 @@ const exportarReporteCompletoExcel = async (req, res) => {
       await supabase.from('reportes_generados').insert([{
         fecha_inicio: fecha, fecha_fin: fecha, archivo_url: urlData.publicUrl,
         usuario: usuario || 'profesor', grado: grado || null, seccion: seccion || null,
+        institucion_id
       }]);
     } catch (e) { console.warn('⚠️ Metadata no guardada:', e.message); }
     res.json({ success: true, url: urlData.publicUrl });
@@ -641,7 +674,10 @@ const exportarReporteCompletoExcel = async (req, res) => {
 
 // ========== LISTAR REPORTES GENERADOS ==========
 const getReportesGenerados = async (req, res) => {
-  const { data, error } = await supabase.from('reportes_generados').select('*').order('fecha_generacion', { ascending: false });
+  const institucion_id = req.user.institucion_id;
+  let query = supabase.from('reportes_generados').select('*').order('fecha_generacion', { ascending: false });
+  if (institucion_id) query = query.eq('institucion_id', institucion_id);
+  const { data, error } = await query;
   if (error) return res.status(400).json({ error: error.message });
   res.json(data);
 };
@@ -650,6 +686,7 @@ const getReportesGenerados = async (req, res) => {
 const getEstadisticas = async (req, res) => {
   try {
     const { fechaInicio, fechaFin, profesorEmail } = req.query;
+    const institucion_id = req.user.institucion_id;
     let inicio, fin;
     if (fechaInicio && fechaFin) {
       inicio = fechaInicio; fin = fechaFin;
@@ -658,22 +695,24 @@ const getEstadisticas = async (req, res) => {
       inicio = new Date(hoy.getFullYear(), hoy.getMonth(), 1).toISOString().split('T')[0];
       fin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).toISOString().split('T')[0];
     }
-    const filtros = await obtenerFiltrosProfesor(profesorEmail);
-    const estudiantes = await obtenerEstudiantesFiltrados(filtros);
+    const filtros = await obtenerFiltrosProfesor(profesorEmail, institucion_id);
+    const estudiantes = await obtenerEstudiantesFiltrados(filtros, institucion_id);
     if (estudiantes.length === 0) {
       return res.json({ masFaltas: [], mejorRecord: [], totalDias: 0, resumenGradoCarrera: [] });
     }
     let asistencias = [];
-    const idsMaterias = await obtenerIdsMateriaProfesor(profesorEmail);
+    const idsMaterias = await obtenerIdsMateriaProfesor(profesorEmail, institucion_id);
     if (idsMaterias === null) {
-      const { data, error } = await supabase.from('asistencia')
-        .select('cedula, fecha').gte('fecha', inicio).lte('fecha', fin);
+      let query = supabase.from('asistencia').select('cedula, fecha').gte('fecha', inicio).lte('fecha', fin);
+      if (institucion_id) query = query.eq('institucion_id', institucion_id);
+      const { data, error } = await query;
       if (error) throw error;
       asistencias = data || [];
     } else if (idsMaterias.length > 0) {
-      const { data, error } = await supabase.from('asistencia')
-        .select('cedula, fecha').gte('fecha', inicio).lte('fecha', fin)
-        .in('materia_id', idsMaterias);
+      let query = supabase.from('asistencia').select('cedula, fecha')
+        .gte('fecha', inicio).lte('fecha', fin).in('materia_id', idsMaterias);
+      if (institucion_id) query = query.eq('institucion_id', institucion_id);
+      const { data, error } = await query;
       if (error) throw error;
       asistencias = data || [];
     }
@@ -717,10 +756,11 @@ const getEstadisticas = async (req, res) => {
   }
 };
 
-// ========== EXPORTAR ESTADÍSTICAS A EXCEL (GUARDA EN estadisticas_generadas) ==========
+// ========== EXPORTAR ESTADÍSTICAS A EXCEL ==========
 const exportarEstadisticasExcel = async (req, res) => {
   try {
     const { fechaInicio, fechaFin, profesorEmail } = req.query;
+    const institucion_id = req.user.institucion_id;
     let inicio, fin;
     if (fechaInicio && fechaFin) {
       inicio = fechaInicio; fin = fechaFin;
@@ -729,17 +769,20 @@ const exportarEstadisticasExcel = async (req, res) => {
       inicio = new Date(hoy.getFullYear(), hoy.getMonth(), 1).toISOString().split('T')[0];
       fin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).toISOString().split('T')[0];
     }
-    // Obtener datos (misma lógica que getEstadisticas)
-    const filtros = await obtenerFiltrosProfesor(profesorEmail);
-    const estudiantes = await obtenerEstudiantesFiltrados(filtros);
+    const filtros = await obtenerFiltrosProfesor(profesorEmail, institucion_id);
+    const estudiantes = await obtenerEstudiantesFiltrados(filtros, institucion_id);
     let asistencias = [];
-    const idsMaterias = await obtenerIdsMateriaProfesor(profesorEmail);
+    const idsMaterias = await obtenerIdsMateriaProfesor(profesorEmail, institucion_id);
     if (idsMaterias === null) {
-      const { data } = await supabase.from('asistencia').select('cedula, fecha').gte('fecha', inicio).lte('fecha', fin);
+      let query = supabase.from('asistencia').select('cedula, fecha').gte('fecha', inicio).lte('fecha', fin);
+      if (institucion_id) query = query.eq('institucion_id', institucion_id);
+      const { data } = await query;
       asistencias = data || [];
     } else if (idsMaterias.length > 0) {
-      const { data } = await supabase.from('asistencia').select('cedula, fecha')
+      let query = supabase.from('asistencia').select('cedula, fecha')
         .gte('fecha', inicio).lte('fecha', fin).in('materia_id', idsMaterias);
+      if (institucion_id) query = query.eq('institucion_id', institucion_id);
+      const { data } = await query;
       asistencias = data || [];
     }
     const asistenciaCount = {};
@@ -786,7 +829,7 @@ const exportarEstadisticasExcel = async (req, res) => {
       { header: 'Asistencias', key: 'asistencias', width: 13 }, { header: 'Faltas', key: 'faltas', width: 10 },
       { header: 'Total días', key: 'totalDias', width: 12 }
     ];
-    // Hoja Dashboard
+    // Hoja Dashboard (resumen)
     const wsDash = workbook.addWorksheet('Dashboard');
     wsDash.mergeCells('A1:E1');
     wsDash.getCell('A1').value = `ESTADÍSTICAS DE ASISTENCIA — ${inicio} al ${fin}`;
@@ -835,7 +878,7 @@ const exportarEstadisticasExcel = async (req, res) => {
       r.eachCell(cell => { cell.style = idx % 2 === 0 ? dataStyle : altRowStyle; });
       r.getCell(7).font = { bold: true, color: { argb: 'FF256D5B' } };
     });
-    // Hoja Resumen
+    // Hoja Resumen por grado/carrera
     const wsResumen = workbook.addWorksheet('Resumen');
     wsResumen.mergeCells('A1:F1');
     wsResumen.getCell('A1').value = 'RESUMEN POR GRADO Y CARRERA';
@@ -855,7 +898,7 @@ const exportarEstadisticasExcel = async (req, res) => {
       const r = wsResumen.addRow([item.grado, item.carrera, item.totalAsistencias, item.totalFaltas, item.totalEstudiantes, parseFloat(item.promedioAsistencias)]);
       r.eachCell(cell => { cell.style = idx % 2 === 0 ? dataStyle : altRowStyle; });
     });
-    // Gráficas
+    // Agregar gráficos
     const bufferBase = await workbook.xlsx.writeBuffer();
     const graficas = [];
     if (resumenArray.length > 0) {
@@ -901,17 +944,18 @@ const exportarEstadisticasExcel = async (req, res) => {
     if (uploadError) throw uploadError;
     const { data: urlData } = supabase.storage.from('reportes').getPublicUrl(fileName);
     const archivo_url = urlData.publicUrl;
-    // Guardar en estadisticas_generadas
+    // Guardar registro en estadisticas_generadas
     try {
       const { error: insertError } = await supabase
         .from('estadisticas_generadas')
         .insert([{
           fecha_inicio: inicio,
           fecha_fin: fin,
-          archivo_url: archivo_url,
+          archivo_url,
           usuario: profesorEmail ? 'profesor' : 'admin',
           creado_por: profesorEmail || 'admin',
-          fecha_generacion: new Date().toISOString()
+          fecha_generacion: new Date().toISOString(),
+          institucion_id
         }]);
       if (insertError) throw insertError;
       console.log('✅ Estadística guardada en tabla estadisticas_generadas');
