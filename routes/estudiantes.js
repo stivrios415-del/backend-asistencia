@@ -6,6 +6,14 @@ const estudianteController = require('../controllers/estudianteController');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
+// ═══════════════════════════════════════════════════════════════
+// ✅ RUTAS PÚBLICAS — sin token (para la credencial del estudiante)
+// ═══════════════════════════════════════════════════════════════
+router.get('/publico/:cedula', estudianteController.getEstudiantePublico);
+
+// ═══════════════════════════════════════════════════════════════
+// 🔒 RUTAS PROTEGIDAS — requieren token de profesor/admin
+// ═══════════════════════════════════════════════════════════════
 router.use(verificarProfesor);
 
 router.get('/', estudianteController.getEstudiantes);
