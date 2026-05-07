@@ -9,22 +9,27 @@ const getInstitucionPorCodigo = async (req, res) => {
   }
 
   try {
-    console.log('🔍 Buscando institución con código:', codigo.toUpperCase().trim());
+    const codigoLimpio = codigo.toUpperCase().trim();
+    console.log('🔍 Buscando institución con código:', codigoLimpio);
 
     const { data, error } = await supabase
       .from('instituciones')
       .select('id, nombre, codigo, color_primario, color_secundario, logo_url, plan, activa')
-      .eq('codigo', codigo.toUpperCase().trim())
-      .single();
+      .eq('codigo', codigoLimpio)
+      .maybeSingle(); // ← maybeSingle no falla si hay 0 resultados
 
-    console.log('📦 Resultado Supabase - data:', JSON.stringify(data));
-    console.log('❌ Resultado Supabase - error:', JSON.stringify(error));
+    console.log('📦 data:', JSON.stringify(data));
+    console.log('❌ error:', JSON.stringify(error));
 
-    if (error || !data) {
-      return res.status(404).json({ error: 'Institución no encontrada', supabaseError: error?.message });
+    if (error) {
+      console.error('Error Supabase:', error);
+      return res.status(500).json({ error: error.message });
     }
 
-    // Si tiene campo activa y está en false, rechazar
+    if (!data) {
+      return res.status(404).json({ error: 'Institución no encontrada' });
+    }
+
     if (data.activa === false) {
       return res.status(403).json({ error: 'Esta institución está inactiva' });
     }
