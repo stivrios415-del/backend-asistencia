@@ -1,4 +1,4 @@
-const supabase = require('../config/supabase');
+const { supabase } = require('../config/supabase');
 
 // ========== OBTENER INSTITUCIÓN POR CÓDIGO ==========
 const getInstitucionPorCodigo = async (req, res) => {
