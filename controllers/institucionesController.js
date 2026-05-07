@@ -16,24 +16,24 @@ const getInstitucionPorCodigo = async (req, res) => {
       .from('instituciones')
       .select('id, nombre, codigo, color_primario, color_secundario, logo_url, plan, activa')
       .eq('codigo', codigoLimpio)
-      .maybeSingle(); // ← maybeSingle no falla si hay 0 resultados
-
-    console.log('📦 data:', JSON.stringify(data));
-    console.log('❌ error:', JSON.stringify(error));
+      .maybeSingle();
 
     if (error) {
-      console.error('Error Supabase:', error);
+      console.error('❌ Error Supabase en getInstitucionPorCodigo:', error.message);
       return res.status(500).json({ error: error.message });
     }
 
     if (!data) {
+      console.log(`⚠️ Institución con código "${codigoLimpio}" no encontrada`);
       return res.status(404).json({ error: 'Institución no encontrada' });
     }
 
     if (data.activa === false) {
+      console.log(`⚠️ Institución "${codigoLimpio}" está inactiva`);
       return res.status(403).json({ error: 'Esta institución está inactiva' });
     }
 
+    console.log(`✅ Institución encontrada: ${data.nombre}`);
     res.json({
       id: data.id,
       nombre: data.nombre,
@@ -43,13 +43,13 @@ const getInstitucionPorCodigo = async (req, res) => {
       logo_url: data.logo_url || null,
       plan: data.plan || 'basico',
     });
-  } catch (error) {
-    console.error('Error buscando institución:', error);
-    res.status(500).json({ error: error.message });
+  } catch (err) {
+    console.error('❌ Excepción en getInstitucionPorCodigo:', err.message);
+    res.status(500).json({ error: err.message });
   }
 };
 
-// ========== LISTAR TODAS LAS INSTITUCIONES (solo admin sistema) ==========
+// ========== LISTAR TODAS LAS INSTITUCIONES ==========
 const listarInstituciones = async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -57,14 +57,17 @@ const listarInstituciones = async (req, res) => {
       .select('*')
       .order('nombre', { ascending: true });
 
-    if (error) throw error;
+    if (error) {
+      console.error('❌ Error en listarInstituciones:', error.message);
+      throw error;
+    }
     res.json(data);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 };
 
-// ========== CREAR INSTITUCIÓN (solo admin sistema) ==========
+// ========== CREAR INSTITUCIÓN ==========
 const crearInstitucion = async (req, res) => {
   const { nombre, codigo, color_primario, color_secundario, logo_url, plan } = req.body;
 
@@ -73,11 +76,12 @@ const crearInstitucion = async (req, res) => {
   }
 
   try {
-    // Verificar que el código no exista
+    const codigoLimpio = codigo.toUpperCase().trim();
+
     const { data: existente } = await supabase
       .from('instituciones')
       .select('id')
-      .eq('codigo', codigo.toUpperCase().trim())
+      .eq('codigo', codigoLimpio)
       .single();
 
     if (existente) {
@@ -88,7 +92,7 @@ const crearInstitucion = async (req, res) => {
       .from('instituciones')
       .insert([{
         nombre,
-        codigo: codigo.toUpperCase().trim(),
+        codigo: codigoLimpio,
         color_primario: color_primario || '#143C65',
         color_secundario: color_secundario || '#256D5B',
         logo_url: logo_url || null,
@@ -98,11 +102,16 @@ const crearInstitucion = async (req, res) => {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      console.error('❌ Error en crearInstitucion:', error.message);
+      throw error;
+    }
+
+    console.log(`✅ Institución creada: ${nombre} (${codigoLimpio})`);
     res.json({ success: true, institucion: data });
-  } catch (error) {
-    console.error('Error creando institución:', error);
-    res.status(500).json({ error: error.message });
+  } catch (err) {
+    console.error('❌ Excepción en crearInstitucion:', err.message);
+    res.status(500).json({ error: err.message });
   }
 };
 
