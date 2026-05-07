@@ -12,7 +12,7 @@ const estudiantesRoutes = require('./routes/estudiantes');
 const asistenciaRoutes = require('./routes/asistencia');
 const adminRoutes = require('./routes/admin');
 const materiasRoutes = require('./routes/materias');
-const institucionesRoutes = require('./routes/institucionesRoutes');
+const institucionesRoutes = require('./routes/instituciones');
 
 app.use((req, res, next) => {
   console.log(`📢 [${new Date().toISOString()}] ${req.method} ${req.url}`);
