@@ -12,18 +12,26 @@ async function getPerfil(userId) {
   return { rol: data?.rol || null, institucion_id: data?.institucion_id || null };
 }
 
-// ========== CONSULTA PÚBLICA — solo para credencial del estudiante ==========
-// ✅ NO requiere autenticación. Solo devuelve campos no sensibles.
+// ========== CONSULTA PÚBLICA — para credencial del estudiante ==========
+// ✅ NO requiere autenticación. Filtra por institucion_id para aislar colegios.
 const getEstudiantePublico = async (req, res) => {
   const { cedula } = req.params;
-  console.log(`🌐 [estudiantes] GET /publico/${cedula} - Consulta pública`);
+  const { institucion_id } = req.query; // ✅ recibe la institución del frontend
+
+  console.log(`🌐 [estudiantes] GET /publico/${cedula} - institución: ${institucion_id}`);
 
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from('estudiantes')
       .select('cedula, nombre, apellido, grado, seccion, carrera, foto_url, institucion_id')
-      .eq('cedula', cedula)
-      .maybeSingle();
+      .eq('cedula', cedula);
+
+    // ✅ Filtrar por institución — cada colegio solo ve sus propios alumnos
+    if (institucion_id) {
+      query = query.eq('institucion_id', institucion_id);
+    }
+
+    const { data, error } = await query.maybeSingle();
 
     if (error) {
       console.error('❌ Error en getEstudiantePublico:', error.message);
@@ -31,7 +39,7 @@ const getEstudiantePublico = async (req, res) => {
     }
 
     if (!data) {
-      console.log(`⚠️ Estudiante con cédula ${cedula} no encontrado (público)`);
+      console.log(`⚠️ Estudiante ${cedula} no encontrado en esta institución`);
       return res.status(404).json({ error: 'Estudiante no encontrado' });
     }
 
@@ -54,7 +62,6 @@ const getEstudiantes = async (req, res) => {
     if (institucion_id) {
       query = query.eq('institucion_id', institucion_id);
     }
-    // Si es superadmin (institucion_id = null), no aplicar filtro
 
     const { data, error } = await query.order('apellido', { ascending: true });
 
@@ -286,7 +293,7 @@ const getGradosSecciones = async (req, res) => {
 };
 
 module.exports = {
-  getEstudiantePublico,   // ✅ ruta pública para credencial del estudiante
+  getEstudiantePublico,
   getEstudiantes,
   getEstudianteByCedula,
   createEstudiante,
