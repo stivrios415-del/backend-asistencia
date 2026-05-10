@@ -12,26 +12,41 @@ function escapeXml(str) {
     .replace(/'/g, '&apos;');
 }
 
-// ========== OBTENER DATOS DE LA INSTITUCIÓN ==========
+// ========== HELPER: obtener datos de institución ==========
 async function obtenerInstitucion(institucion_id) {
-  if (!institucion_id) return null;
+  if (!institucion_id) {
+    return {
+      nombre: 'Sistema de Asistencia',
+      color_primario: '#143C65',
+      color_secundario: '#256D5B',
+    };
+  }
   const { data, error } = await supabase
     .from('instituciones')
-    .select('id, nombre, color_primario, color_secundario, logo_url')
+    .select('nombre, color_primario, color_secundario, logo_url')
     .eq('id', institucion_id)
     .single();
   if (error || !data) {
-    console.warn('No se pudo obtener la institución:', error?.message);
-    return { nombre: 'Institución', color_primario: '143C65', color_secundario: '256D5B' };
+    return {
+      nombre: 'Sistema de Asistencia',
+      color_primario: '#143C65',
+      color_secundario: '#256D5B',
+    };
   }
   return data;
 }
 
+// ========== HELPER: convertir color hex a ARGB para ExcelJS ==========
+function hexToArgb(hex) {
+  const clean = hex.replace('#', '');
+  return `FF${clean.toUpperCase()}`;
+}
+
 // ========== HELPER: generar XML de gráfica de barras ==========
-function generarChartBarrasXml(series, titulo, colorPrimario = '143C65') {
-  const coloresBase = [colorPrimario, 'E53E3E', '256D5B', 'F18F01', 'A23B72'];
+function generarChartBarrasXml(series, titulo, colorPrimario = '143C65', colorSecundario = '256D5B') {
+  const colores = [colorPrimario, 'E53E3E', colorSecundario, 'F18F01', 'A23B72'];
   const seriesXml = series.map((s, sIdx) => {
-    const color = coloresBase[sIdx % coloresBase.length];
+    const color = colores[sIdx % colores.length];
     const ptsCat = s.categorias.map((c, i) =>
       `<c:pt idx="${i}"><c:v>${escapeXml(String(c))}</c:v></c:pt>`
     ).join('');
@@ -131,7 +146,7 @@ function generarChartBarrasXml(series, titulo, colorPrimario = '143C65') {
 }
 
 // ========== HELPER: generar XML de gráfica de pie ==========
-function generarChartPieXml(categorias, valores, titulo, colorPrimario = '143C65') {
+function generarChartPieXml(categorias, valores, titulo) {
   const ptsCat = categorias.map((c, i) =>
     `<c:pt idx="${i}"><c:v>${escapeXml(String(c))}</c:v></c:pt>`
   ).join('');
@@ -315,7 +330,7 @@ async function obtenerFiltrosProfesor(profesorEmail, institucion_id) {
 
 // ========== HELPER: obtener IDs de materias del profesor ==========
 async function obtenerIdsMateriaProfesor(profesorEmail, institucion_id) {
-  if (!profesorEmail || profesorEmail === 'all' || profesorEmail === '' || profesorEmail === 'null') return null;
+  if (!profesorEmail || profesorEmail === 'all' || profesorEmail === '') return null;
   const { data: profesor } = await supabase
     .from('profesores').select('id').eq('email', profesorEmail.trim()).single();
   if (!profesor) {
@@ -503,20 +518,57 @@ const exportarReporteExcel = async (req, res) => {
   if (institucion_id) query = query.eq('institucion_id', institucion_id);
   const { data, error } = await query;
   if (error) return res.status(400).json({ error: error.message });
+
+  const institucion = await obtenerInstitucion(institucion_id);
+  const colorPrimario = hexToArgb(institucion.color_primario);
+
   const workbook = new ExcelJS.Workbook();
   const ws = workbook.addWorksheet('Reporte Asistencia');
+
+  // Encabezado con nombre de institución
+  ws.mergeCells('A1:G1');
+  ws.getCell('A1').value = institucion.nombre.toUpperCase();
+  ws.getCell('A1').font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
+  ws.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorPrimario } };
+  ws.getCell('A1').alignment = { horizontal: 'center', vertical: 'middle' };
+  ws.getRow(1).height = 30;
+
+  ws.mergeCells('A2:G2');
+  ws.getCell('A2').value = `Reporte de Asistencia — ${fechaInicio} al ${fechaFin}`;
+  ws.getCell('A2').font = { italic: true, size: 11, color: { argb: 'FF555555' } };
+  ws.getCell('A2').alignment = { horizontal: 'center' };
+
+  ws.addRow([]);
+
   ws.columns = [
     { header: 'Fecha', key: 'fecha', width: 12 }, { header: 'Hora', key: 'hora', width: 10 },
     { header: 'Cédula', key: 'cedula', width: 15 }, { header: 'Nombre', key: 'nombre', width: 20 },
     { header: 'Apellido', key: 'apellido', width: 20 }, { header: 'Grado', key: 'grado', width: 8 },
     { header: 'Sección', key: 'seccion', width: 8 },
   ];
-  data.forEach(item => ws.addRow({
-    fecha: item.fecha, hora: item.hora,
-    cedula: item.estudiantes?.cedula || '', nombre: item.estudiantes?.nombre || '',
-    apellido: item.estudiantes?.apellido || '', grado: item.estudiantes?.grado || '',
-    seccion: item.estudiantes?.seccion || '',
-  }));
+
+  const headerRow = ws.getRow(4);
+  headerRow.values = ['Fecha', 'Hora', 'Cédula', 'Nombre', 'Apellido', 'Grado', 'Sección'];
+  headerRow.eachCell(cell => {
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorPrimario } };
+    cell.alignment = { horizontal: 'center' };
+  });
+
+  data.forEach((item, idx) => {
+    const row = ws.addRow({
+      fecha: item.fecha, hora: item.hora,
+      cedula: item.estudiantes?.cedula || '', nombre: item.estudiantes?.nombre || '',
+      apellido: item.estudiantes?.apellido || '', grado: item.estudiantes?.grado || '',
+      seccion: item.estudiantes?.seccion || '',
+    });
+    if (idx % 2 !== 0) {
+      row.eachCell(cell => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF7FAFC' } };
+      });
+    }
+  });
+
   const buffer = await workbook.xlsx.writeBuffer();
   const fileName = `reporte_${fechaInicio}_a_${fechaFin}_${Date.now()}.xlsx`;
   const { error: uploadError } = await supabase.storage.from('reportes').upload(fileName, buffer, {
@@ -531,18 +583,17 @@ const exportarReporteExcel = async (req, res) => {
   res.json({ success: true, url: urlData.publicUrl });
 };
 
-// ========== EXPORTAR REPORTE COMPLETO POR CLASE (MEJORADO CON INSTITUCIÓN) ==========
+// ========== EXPORTAR REPORTE COMPLETO POR CLASE ==========
 const exportarReporteCompletoExcel = async (req, res) => {
   const { fecha, usuario, nombreProfesor, grado, seccion, profesorEmail } = req.query;
   const institucion_id = req.user.institucion_id;
-
   if (!fecha) return res.status(400).json({ error: 'Debe proporcionar una fecha (YYYY-MM-DD)' });
 
-  // Obtener datos de la institución
+  // Obtener datos de la institución dinámicamente
   const institucion = await obtenerInstitucion(institucion_id);
-  const colorPrimario = institucion.color_primario || '143C65';
-  const colorSecundario = institucion.color_secundario || '256D5B';
-  const nombreInstitucion = institucion.nombre || 'Institución';
+  const colorPrimario = hexToArgb(institucion.color_primario);
+  const colorSecundario = hexToArgb(institucion.color_secundario);
+  const nombreInstitucion = institucion.nombre;
 
   const subirExcelVacio = async (mensaje) => {
     const wb = new ExcelJS.Workbook();
@@ -563,7 +614,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
       )
     `).eq('fecha', fecha);
     if (institucion_id) queryAsistencias = queryAsistencias.eq('institucion_id', institucion_id);
-
     const filtrarPorProfesor = profesorEmail && profesorEmail !== 'all' && profesorEmail !== '';
     if (filtrarPorProfesor) {
       const idsMaterias = await obtenerIdsMateriaProfesor(profesorEmail, institucion_id);
@@ -575,7 +625,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
     }
     if (grado) queryAsistencias = queryAsistencias.filter('materias.grado', 'eq', grado);
     if (seccion) queryAsistencias = queryAsistencias.filter('materias.seccion', 'eq', seccion);
-
     const { data: asistencias, error: errAsistencias } = await queryAsistencias;
     if (errAsistencias) throw errAsistencias;
 
@@ -589,71 +638,70 @@ const exportarReporteCompletoExcel = async (req, res) => {
 
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet(`Asistencia_${fecha}`);
-
-    // Estilos dinámicos con colores de la institución
     const headerStyle = {
       font: { bold: true, color: { argb: 'FFFFFFFF' } },
-      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${colorPrimario}` } },
-      alignment: { horizontal: 'center', vertical: 'middle' }
+      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: colorPrimario } },
+      alignment: { horizontal: 'center' }
     };
-    const titleStyle = {
-      font: { bold: true, size: 16, color: { argb: 'FFFFFFFF' } },
-      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${colorPrimario}` } }
-    };
-    const subtitleStyle = {
-      font: { size: 11, italic: true, color: { argb: 'FFFFFFFF' } },
-      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${colorSecundario}` } }
-    };
-    const resumenHeaderStyle = {
-      font: { bold: true, color: { argb: 'FFFFFFFF' } },
-      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${colorPrimario}` } }
-    };
-    const claseTitleStyle = {
-      font: { bold: true, size: 12, color: { argb: 'FFFFFFFF' } },
-      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${colorSecundario}` } }
+    const subHeaderStyle = {
+      font: { bold: true },
+      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF8FF' } }
     };
 
     let currentRow = 1;
 
-    // Título de la institución
+    // ===== ENCABEZADO CON NOMBRE DE INSTITUCIÓN =====
     worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
     worksheet.getCell(`A${currentRow}`).value = nombreInstitucion.toUpperCase();
-    worksheet.getRow(currentRow).eachCell(cell => { cell.style = titleStyle; });
-    worksheet.getRow(currentRow).height = 30;
+    worksheet.getCell(`A${currentRow}`).font = { bold: true, size: 16, color: { argb: 'FFFFFFFF' } };
+    worksheet.getCell(`A${currentRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorPrimario } };
+    worksheet.getCell(`A${currentRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
+    worksheet.getRow(currentRow).height = 35;
     currentRow++;
 
+    // Subtítulo con fecha
     const fechaLegible = new Date(fecha + 'T12:00:00').toLocaleDateString('es-ES', {
       weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'America/Tegucigalpa'
     });
-    worksheet.addRow([`Fecha: ${fechaLegible}`]);
     worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
-    worksheet.getRow(currentRow).font = { bold: true, size: 13 };
+    worksheet.getCell(`A${currentRow}`).value = `Reporte de Asistencia — ${fechaLegible}`;
+    worksheet.getCell(`A${currentRow}`).font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
+    worksheet.getCell(`A${currentRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorSecundario } };
+    worksheet.getCell(`A${currentRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
+    worksheet.getRow(currentRow).height = 25;
     currentRow++;
 
     if (nombreProfesor) {
-      worksheet.addRow([`Generado por: ${nombreProfesor}`]);
       worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
-      worksheet.getRow(currentRow).font = { italic: true };
+      worksheet.getCell(`A${currentRow}`).value = `Generado por: ${nombreProfesor}`;
+      worksheet.getCell(`A${currentRow}`).font = { italic: true, size: 10, color: { argb: 'FF555555' } };
+      worksheet.getCell(`A${currentRow}`).alignment = { horizontal: 'center' };
       currentRow++;
     }
+
     worksheet.addRow([]); currentRow++;
 
     if (grupos.size === 0) {
       worksheet.addRow(['No se registraron asistencias en esta fecha.']);
     } else {
-      worksheet.addRow(['RESUMEN DE CLASES']);
+      // ===== RESUMEN DE CLASES =====
       worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
-      worksheet.getRow(currentRow).eachCell(cell => { cell.style = resumenHeaderStyle; });
+      worksheet.getCell(`A${currentRow}`).value = 'RESUMEN DE CLASES';
+      worksheet.getCell(`A${currentRow}`).font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
+      worksheet.getCell(`A${currentRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorPrimario } };
+      worksheet.getCell(`A${currentRow}`).alignment = { horizontal: 'center' };
+      worksheet.getRow(currentRow).height = 22;
       currentRow++;
 
-      worksheet.addRow(['Clase', 'Grado', 'Sección', 'Profesor', 'Presentes']);
-      worksheet.getRow(currentRow).eachCell(cell => { cell.style = headerStyle; });
+      const resumenHeaders = worksheet.addRow(['Clase', 'Grado', 'Sección', 'Profesor', 'Presentes']);
+      resumenHeaders.eachCell(cell => { cell.style = subHeaderStyle; });
       currentRow++;
 
       const gruposOrdenadosResumen = Array.from(grupos.values()).sort((a, b) => {
         if (a.materia.grado !== b.materia.grado) return String(a.materia.grado).localeCompare(String(b.materia.grado));
         return String(a.materia.seccion).localeCompare(String(b.materia.seccion));
       });
+
       gruposOrdenadosResumen.forEach((grupo, idx) => {
         const mat = grupo.materia;
         const row = worksheet.addRow([
@@ -662,54 +710,73 @@ const exportarReporteCompletoExcel = async (req, res) => {
           mat.profesores?.nombre || 'Sin profesor',
           grupo.asistencias.length
         ]);
-        row.getCell(5).font = { bold: true, color: { argb: `FF${colorSecundario}` } };
+        row.getCell(5).font = { bold: true, color: { argb: colorSecundario } };
         if (idx % 2 !== 0) row.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF7FAFC' } };
         currentRow++;
       });
 
       const totalPresentes = Array.from(grupos.values()).reduce((sum, g) => sum + g.asistencias.length, 0);
-      worksheet.addRow(['', '', '', 'TOTAL PRESENTES:', totalPresentes]);
-      const totalRow = worksheet.getRow(currentRow);
+      const totalRow = worksheet.addRow(['', '', '', 'TOTAL PRESENTES:', totalPresentes]);
       totalRow.getCell(4).font = { bold: true };
-      totalRow.getCell(5).font = { bold: true, color: { argb: `FF${colorPrimario}` } };
+      totalRow.getCell(5).font = { bold: true, color: { argb: colorPrimario } };
       currentRow++;
+
       worksheet.addRow([]); currentRow++;
       worksheet.addRow([]); currentRow++;
 
+      // ===== DETALLE POR CLASE =====
       const gruposOrdenados = Array.from(grupos.values()).sort((a, b) => {
         if (a.materia.grado !== b.materia.grado) return String(a.materia.grado).localeCompare(String(b.materia.grado));
         return String(a.materia.seccion).localeCompare(String(b.materia.seccion));
       });
+
       for (const grupo of gruposOrdenados) {
         const mat = grupo.materia;
         const nombreProf = mat.profesores?.nombre || 'Sin profesor';
-        worksheet.addRow([`${mat.nombre || mat.carrera || 'Clase'} — Grado ${mat.grado}° Sección ${mat.seccion}`]);
+        const totalAlumnos = grupo.asistencias.length;
+
+        // Título de clase con color de institución
         worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
-        worksheet.getRow(currentRow).eachCell(cell => { cell.style = claseTitleStyle; });
+        worksheet.getCell(`A${currentRow}`).value =
+          `${mat.nombre || mat.carrera || 'Clase'} — Grado ${mat.grado}° Sección ${mat.seccion}`;
+        worksheet.getCell(`A${currentRow}`).font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
+        worksheet.getCell(`A${currentRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorSecundario } };
+        worksheet.getCell(`A${currentRow}`).alignment = { horizontal: 'left', indent: 1 };
+        worksheet.getRow(currentRow).height = 22;
         currentRow++;
 
-        worksheet.addRow([`👤 Profesor: ${nombreProf}   |   👥 Total presentes: ${grupo.asistencias.length}`]);
         worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
-        worksheet.getRow(currentRow).font = { italic: true, size: 10, color: { argb: 'FF555555' } };
+        worksheet.getCell(`A${currentRow}`).value =
+          `👤 Profesor: ${nombreProf}   |   👥 Total presentes: ${totalAlumnos}`;
+        worksheet.getCell(`A${currentRow}`).font = { italic: true, size: 10, color: { argb: 'FF555555' } };
         currentRow++;
 
-        worksheet.addRow(['Cédula', 'Nombre', 'Apellido', 'Grado (Est.)', 'Sección (Est.)', 'Carrera', 'Hora de Escaneo']);
-        worksheet.getRow(currentRow).eachCell(cell => { cell.style = headerStyle; });
+        const colHeaders = worksheet.addRow([
+          'Cédula', 'Nombre', 'Apellido', 'Grado (Est.)', 'Sección (Est.)', 'Carrera', 'Hora de Escaneo'
+        ]);
+        colHeaders.eachCell(cell => { cell.style = subHeaderStyle; });
         currentRow++;
 
         for (const item of grupo.asistencias) {
           const est = item.estudiante;
-          worksheet.addRow([
+          const dataRow = worksheet.addRow([
             est?.cedula || '', est?.nombre || '', est?.apellido || '',
             est?.grado || '', est?.seccion || '', est?.carrera || '', item.hora || ''
           ]);
+          dataRow.eachCell(cell => {
+            cell.border = {
+              bottom: { style: 'hair', color: { argb: 'FFE2E8F0' } }
+            };
+          });
           currentRow++;
         }
         worksheet.addRow([]); currentRow++;
       }
     }
 
-    [15, 20, 20, 12, 12, 20, 15, 15].forEach((w, i) => { if (worksheet.columns[i]) worksheet.columns[i].width = w; });
+    [15, 20, 20, 12, 12, 20, 15, 15].forEach((w, i) => {
+      if (worksheet.columns[i]) worksheet.columns[i].width = w;
+    });
 
     const buffer = await workbook.xlsx.writeBuffer();
     const fileName = `reporte_completo_${fecha}_${Date.now()}.xlsx`;
@@ -747,7 +814,7 @@ const getEstadisticas = async (req, res) => {
   try {
     const { fechaInicio, fechaFin, profesorEmail } = req.query;
     const institucion_id = req.user.institucion_id;
-
+    console.log('📊 getEstadisticas', { profesorEmail, institucion_id });
     let inicio, fin;
     if (fechaInicio && fechaFin) {
       inicio = fechaInicio; fin = fechaFin;
@@ -756,13 +823,12 @@ const getEstadisticas = async (req, res) => {
       inicio = new Date(hoy.getFullYear(), hoy.getMonth(), 1).toISOString().split('T')[0];
       fin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).toISOString().split('T')[0];
     }
-
     const filtros = await obtenerFiltrosProfesor(profesorEmail, institucion_id);
     const estudiantes = await obtenerEstudiantesFiltrados(filtros, institucion_id);
+    console.log('📊 Estudiantes:', estudiantes.length);
     if (estudiantes.length === 0) {
       return res.json({ masFaltas: [], mejorRecord: [], totalDias: 0, resumenGradoCarrera: [] });
     }
-
     let asistencias = [];
     const idsMaterias = await obtenerIdsMateriaProfesor(profesorEmail, institucion_id);
     if (idsMaterias === null) {
@@ -779,7 +845,6 @@ const getEstadisticas = async (req, res) => {
       if (error) throw error;
       asistencias = data || [];
     }
-
     const asistenciaCount = {};
     asistencias.forEach(a => { asistenciaCount[a.cedula] = (asistenciaCount[a.cedula] || 0) + 1; });
     const totalDias = Math.ceil((new Date(fin) - new Date(inicio)) / (1000 * 60 * 60 * 24)) + 1;
@@ -788,14 +853,10 @@ const getEstadisticas = async (req, res) => {
       const faltas = totalDias - count;
       return { ...est, asistencias: count, faltas: faltas > 0 ? faltas : 0, totalDias };
     });
-    const masFaltas = [...estadisticasArr]
-      .filter(est => est.faltas > 0)
-      .sort((a, b) => b.faltas - a.faltas)
-      .slice(0, 10);
-    const mejorRecord = [...estadisticasArr]
-      .filter(est => est.asistencias > 0)
-      .sort((a, b) => b.asistencias - a.asistencias)
-      .slice(0, 10);
+    const masFaltas = [...estadisticasArr].filter(est => est.faltas > 0)
+      .sort((a, b) => b.faltas - a.faltas).slice(0, 10);
+    const mejorRecord = [...estadisticasArr].filter(est => est.asistencias > 0)
+      .sort((a, b) => b.asistencias - a.asistencias).slice(0, 10);
     const resumenMap = {};
     estadisticasArr.forEach(est => {
       const key = `${est.grado}|${est.seccion || ''}|${est.carrera || 'Sin carrera'}`;
@@ -813,7 +874,6 @@ const getEstadisticas = async (req, res) => {
       if (a.seccion !== b.seccion) return String(a.seccion).localeCompare(String(b.seccion));
       return a.carrera.localeCompare(b.carrera);
     });
-
     res.json({ masFaltas, mejorRecord, totalDias, resumenGradoCarrera });
   } catch (error) {
     console.error('❌ Error en estadísticas:', error);
@@ -821,17 +881,19 @@ const getEstadisticas = async (req, res) => {
   }
 };
 
-// ========== EXPORTAR ESTADÍSTICAS A EXCEL (CON INSTITUCIÓN) ==========
+// ========== EXPORTAR ESTADÍSTICAS A EXCEL ==========
 const exportarEstadisticasExcel = async (req, res) => {
   try {
     const { fechaInicio, fechaFin, profesorEmail } = req.query;
     const institucion_id = req.user.institucion_id;
 
-    // Obtener datos de la institución
+    // Obtener datos de institución dinámicamente
     const institucion = await obtenerInstitucion(institucion_id);
-    const colorPrimario = institucion.color_primario || '143C65';
-    const colorSecundario = institucion.color_secundario || '256D5B';
-    const nombreInstitucion = institucion.nombre || 'Institución';
+    const colorPrimario = hexToArgb(institucion.color_primario);
+    const colorSecundario = hexToArgb(institucion.color_secundario);
+    const colorPrimarioHex = institucion.color_primario.replace('#', '');
+    const colorSecundarioHex = institucion.color_secundario.replace('#', '');
+    const nombreInstitucion = institucion.nombre;
 
     let inicio, fin;
     if (fechaInicio && fechaFin) {
@@ -872,7 +934,10 @@ const exportarEstadisticasExcel = async (req, res) => {
     const resumenMap = {};
     estadisticasArr.forEach(est => {
       const key = `${est.grado}|${est.carrera || 'Sin carrera'}`;
-      if (!resumenMap[key]) resumenMap[key] = { grado: est.grado, carrera: est.carrera || 'Sin carrera', totalAsistencias: 0, totalFaltas: 0, totalEstudiantes: 0 };
+      if (!resumenMap[key]) resumenMap[key] = {
+        grado: est.grado, carrera: est.carrera || 'Sin carrera',
+        totalAsistencias: 0, totalFaltas: 0, totalEstudiantes: 0
+      };
       resumenMap[key].totalAsistencias += est.asistencias;
       resumenMap[key].totalFaltas += est.faltas;
       resumenMap[key].totalEstudiantes++;
@@ -888,10 +953,10 @@ const exportarEstadisticasExcel = async (req, res) => {
 
     const workbook = new ExcelJS.Workbook();
 
-    // Estilos con colores de la institución
+    // Estilos dinámicos basados en colores de institución
     const headerStyle = {
       font: { bold: true, color: { argb: 'FFFFFFFF' } },
-      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${colorPrimario}` } },
+      fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: colorPrimario } },
       alignment: { horizontal: 'center', vertical: 'middle' },
       border: { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } }
     };
@@ -899,7 +964,6 @@ const exportarEstadisticasExcel = async (req, res) => {
       border: { top: { style: 'thin', color: { argb: 'FFE2E8F0' } }, bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } }, left: { style: 'thin', color: { argb: 'FFE2E8F0' } }, right: { style: 'thin', color: { argb: 'FFE2E8F0' } } }
     };
     const altRowStyle = { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF7FAFC' } }, border: dataStyle.border };
-
     const colsEst = [
       { header: 'Cédula', key: 'cedula', width: 16 }, { header: 'Nombre', key: 'nombre', width: 22 },
       { header: 'Apellido', key: 'apellido', width: 22 }, { header: 'Grado', key: 'grado', width: 8 },
@@ -908,34 +972,47 @@ const exportarEstadisticasExcel = async (req, res) => {
       { header: 'Total días', key: 'totalDias', width: 12 }
     ];
 
+    // ===== HOJA DASHBOARD =====
     const wsDash = workbook.addWorksheet('Dashboard');
+
+    // Nombre de institución como encabezado principal
     wsDash.mergeCells('A1:E1');
     wsDash.getCell('A1').value = nombreInstitucion.toUpperCase();
     wsDash.getCell('A1').font = { bold: true, size: 16, color: { argb: 'FFFFFFFF' } };
-    wsDash.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${colorPrimario}` } };
+    wsDash.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorPrimario } };
+    wsDash.getCell('A1').alignment = { horizontal: 'center', vertical: 'middle' };
+    wsDash.getRow(1).height = 35;
+
     wsDash.mergeCells('A2:E2');
     wsDash.getCell('A2').value = `ESTADÍSTICAS DE ASISTENCIA — ${inicio} al ${fin}`;
-    wsDash.getCell('A2').font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
-    wsDash.getCell('A2').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${colorSecundario}` } };
+    wsDash.getCell('A2').font = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } };
+    wsDash.getCell('A2').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorSecundario } };
+    wsDash.getCell('A2').alignment = { horizontal: 'center', vertical: 'middle' };
+    wsDash.getRow(2).height = 25;
+
     wsDash.mergeCells('A3:E3');
     wsDash.getCell('A3').value = `Estudiantes: ${estudiantes.length}  |  Días del período: ${totalDias}  |  Asistencias totales: ${asistencias.length}`;
-    wsDash.getCell('A3').font = { size: 11, color: { argb: 'FFFFFFFF' }, italic: true };
-    wsDash.getCell('A3').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF555555' } };
+    wsDash.getCell('A3').font = { size: 10, italic: true, color: { argb: 'FF555555' } };
+    wsDash.getCell('A3').alignment = { horizontal: 'center' };
+
     wsDash.addRow([]);
     wsDash.getRow(5).values = ['Grado / Carrera', 'Total Asistencias', 'Total Faltas', 'Promedio', 'Estudiantes'];
     wsDash.getRow(5).eachCell(cell => { cell.style = headerStyle; });
+
     resumenArray.forEach((item, idx) => {
       const r = wsDash.addRow([`${item.grado}° ${item.carrera}`, item.totalAsistencias, item.totalFaltas, parseFloat(item.promedioAsistencias), item.totalEstudiantes]);
       r.eachCell(cell => { cell.style = idx % 2 === 0 ? dataStyle : altRowStyle; });
-      r.getCell(2).font = { bold: true, color: { argb: `FF${colorSecundario}` } };
+      r.getCell(2).font = { bold: true, color: { argb: colorSecundario } };
       r.getCell(3).font = { bold: true, color: { argb: 'FFE53E3E' } };
     });
 
+    // ===== HOJA MÁS FALTAS =====
     const wsFaltas = workbook.addWorksheet('Mas faltas');
     wsFaltas.mergeCells('A1:I1');
-    wsFaltas.getCell('A1').value = 'TOP 10 — ALUMNOS CON MÁS FALTAS';
+    wsFaltas.getCell('A1').value = `${nombreInstitucion} — TOP 10: ALUMNOS CON MÁS FALTAS`;
     wsFaltas.getCell('A1').font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
     wsFaltas.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE53E3E' } };
+    wsFaltas.getCell('A1').alignment = { horizontal: 'center' };
     wsFaltas.addRow([]);
     wsFaltas.columns = colsEst;
     wsFaltas.getRow(3).values = colsEst.map(c => c.header);
@@ -946,11 +1023,13 @@ const exportarEstadisticasExcel = async (req, res) => {
       if (est.faltas >= 3) r.getCell(8).font = { bold: true, color: { argb: 'FFCC0000' } };
     });
 
+    // ===== HOJA MEJOR RÉCORD =====
     const wsRecord = workbook.addWorksheet('Mejor record');
     wsRecord.mergeCells('A1:I1');
-    wsRecord.getCell('A1').value = 'TOP 10 — ALUMNOS CON MEJOR RÉCORD DE ASISTENCIA';
+    wsRecord.getCell('A1').value = `${nombreInstitucion} — TOP 10: MEJOR RÉCORD DE ASISTENCIA`;
     wsRecord.getCell('A1').font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
-    wsRecord.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${colorSecundario}` } };
+    wsRecord.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorSecundario } };
+    wsRecord.getCell('A1').alignment = { horizontal: 'center' };
     wsRecord.addRow([]);
     wsRecord.columns = colsEst;
     wsRecord.getRow(3).values = colsEst.map(c => c.header);
@@ -958,14 +1037,16 @@ const exportarEstadisticasExcel = async (req, res) => {
     mejorRecord.forEach((est, idx) => {
       const r = wsRecord.addRow([est.cedula, est.nombre, est.apellido, est.grado, est.seccion, est.carrera, est.asistencias, est.faltas, est.totalDias]);
       r.eachCell(cell => { cell.style = idx % 2 === 0 ? dataStyle : altRowStyle; });
-      r.getCell(7).font = { bold: true, color: { argb: `FF${colorSecundario}` } };
+      r.getCell(7).font = { bold: true, color: { argb: colorSecundario } };
     });
 
+    // ===== HOJA RESUMEN =====
     const wsResumen = workbook.addWorksheet('Resumen');
     wsResumen.mergeCells('A1:F1');
-    wsResumen.getCell('A1').value = 'RESUMEN POR GRADO Y CARRERA';
+    wsResumen.getCell('A1').value = `${nombreInstitucion} — RESUMEN POR GRADO Y CARRERA`;
     wsResumen.getCell('A1').font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
-    wsResumen.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${colorPrimario}` } };
+    wsResumen.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorPrimario } };
+    wsResumen.getCell('A1').alignment = { horizontal: 'center' };
     wsResumen.addRow([]);
     wsResumen.columns = [
       { header: 'Grado', key: 'grado', width: 10 }, { header: 'Carrera', key: 'carrera', width: 22 },
@@ -974,13 +1055,14 @@ const exportarEstadisticasExcel = async (req, res) => {
       { header: 'Total estudiantes', key: 'totalEstudiantes', width: 20 },
       { header: 'Promedio asistencias', key: 'promedioAsistencias', width: 22 }
     ];
-    wsResumen.getRow(3).values = ['Grado','Carrera','Total asistencias','Total faltas','Total estudiantes','Promedio asistencias'];
+    wsResumen.getRow(3).values = ['Grado', 'Carrera', 'Total asistencias', 'Total faltas', 'Total estudiantes', 'Promedio asistencias'];
     wsResumen.getRow(3).eachCell(cell => { cell.style = headerStyle; });
     resumenArray.forEach((item, idx) => {
       const r = wsResumen.addRow([item.grado, item.carrera, item.totalAsistencias, item.totalFaltas, item.totalEstudiantes, parseFloat(item.promedioAsistencias)]);
       r.eachCell(cell => { cell.style = idx % 2 === 0 ? dataStyle : altRowStyle; });
     });
 
+    // ===== GRÁFICAS =====
     const bufferBase = await workbook.xlsx.writeBuffer();
     const graficas = [];
     if (resumenArray.length > 0) {
@@ -990,11 +1072,11 @@ const exportarEstadisticasExcel = async (req, res) => {
         chartXml: generarChartBarrasXml([
           { nombre: 'Asistencias', categorias: cats, valores: resumenArray.map(r => r.totalAsistencias) },
           { nombre: 'Faltas', categorias: cats, valores: resumenArray.map(r => r.totalFaltas) }
-        ], 'Asistencias vs Faltas por Grado y Carrera', colorPrimario)
+        ], `${nombreInstitucion} — Asistencias vs Faltas`, colorPrimarioHex, colorSecundarioHex)
       });
       graficas.push({
         nombre: 'Graf. Distribucion',
-        chartXml: generarChartPieXml(cats, resumenArray.map(r => r.totalAsistencias), 'Distribución de Asistencias', colorPrimario)
+        chartXml: generarChartPieXml(cats, resumenArray.map(r => r.totalAsistencias), `${nombreInstitucion} — Distribución de Asistencias`)
       });
     }
     if (masFaltas.length > 0) {
@@ -1004,7 +1086,7 @@ const exportarEstadisticasExcel = async (req, res) => {
         chartXml: generarChartBarrasXml([
           { nombre: 'Faltas', categorias: names, valores: masFaltas.map(e => e.faltas) },
           { nombre: 'Asistencias', categorias: names, valores: masFaltas.map(e => e.asistencias) }
-        ], 'Top 10 Alumnos con Más Faltas', colorPrimario)
+        ], `${nombreInstitucion} — Top 10 Más Faltas`, colorPrimarioHex, colorSecundarioHex)
       });
     }
     if (mejorRecord.length > 0) {
@@ -1013,7 +1095,7 @@ const exportarEstadisticasExcel = async (req, res) => {
         nombre: 'Graf. Mejor Record',
         chartXml: generarChartBarrasXml([
           { nombre: 'Asistencias', categorias: names, valores: mejorRecord.map(e => e.asistencias) }
-        ], 'Top 10 Alumnos con Mejor Récord', colorPrimario)
+        ], `${nombreInstitucion} — Top 10 Mejor Récord`, colorPrimarioHex, colorSecundarioHex)
       });
     }
 
@@ -1028,8 +1110,9 @@ const exportarEstadisticasExcel = async (req, res) => {
     if (uploadError) throw uploadError;
     const { data: urlData } = supabase.storage.from('reportes').getPublicUrl(fileName);
     const archivo_url = urlData.publicUrl;
+
     try {
-      await supabase
+      const { error: insertError } = await supabase
         .from('estadisticas_generadas')
         .insert([{
           fecha_inicio: inicio, fecha_fin: fin, archivo_url,
@@ -1038,9 +1121,12 @@ const exportarEstadisticasExcel = async (req, res) => {
           fecha_generacion: new Date().toISOString(),
           institucion_id
         }]);
+      if (insertError) throw insertError;
+      console.log('✅ Estadística guardada en tabla estadisticas_generadas');
     } catch (metaErr) {
-      console.warn('⚠️ No se pudo guardar metadata:', metaErr.message);
+      console.error('❌ No se pudo guardar en estadisticas_generadas:', metaErr.message);
     }
+
     res.json({ success: true, url: archivo_url });
   } catch (error) {
     console.error('❌ Error exportando estadísticas:', error);
