@@ -1,31 +1,34 @@
 const { supabase } = require('../config/supabase');
 
-// Obtener hijos del padre
+// ============================================
+// OBTENER HIJOS DEL PADRE
+// ============================================
 const getHijos = async (req, res) => {
   try {
     const padreId = req.user.id;
     const institucion_id = req.user.institucion_id;
     
-    // Buscar relación padre-estudiante
-    let query = supabase
+    const { data, error } = await supabase
       .from('padre_estudiante')
       .select(`
-        estudiante_id,
-        estudiantes:estudiante_id (
+        estudiante_cedula,
+        estudiantes:estudiante_cedula (
           cedula, nombre, apellido, grado, seccion, carrera, foto_url
         )
       `)
       .eq('padre_id', padreId);
     
-    if (institucion_id) query = query.eq('institucion_id', institucion_id);
-    
-    const { data, error } = await query;
-    
     if (error) throw error;
     
-    const hijos = data.map(item => ({
-      id: item.estudiante_id,
-      ...item.estudiantes
+    const hijos = (data || []).map(item => ({
+      id: item.estudiante_cedula,
+      cedula: item.estudiantes?.cedula,
+      nombre: item.estudiantes?.nombre,
+      apellido: item.estudiantes?.apellido,
+      grado: item.estudiantes?.grado,
+      seccion: item.estudiantes?.seccion,
+      carrera: item.estudiantes?.carrera || 'General',
+      foto_url: item.estudiantes?.foto_url
     }));
     
     res.json(hijos);
@@ -35,7 +38,9 @@ const getHijos = async (req, res) => {
   }
 };
 
-// Ver asistencia de un estudiante específico
+// ============================================
+// VER ASISTENCIA DE UN ESTUDIANTE
+// ============================================
 const getAsistenciaEstudiante = async (req, res) => {
   try {
     const { estudianteId } = req.params;
@@ -50,7 +55,6 @@ const getAsistenciaEstudiante = async (req, res) => {
       inicio = `${año}-${mes.toString().padStart(2, '0')}-01`;
       fin = new Date(año, mes, 0).toISOString().split('T')[0];
     } else {
-      // Últimos 30 días por defecto
       fin = new Date().toISOString().split('T')[0];
       inicio = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     }
@@ -59,7 +63,7 @@ const getAsistenciaEstudiante = async (req, res) => {
       .from('asistencia')
       .select(`
         id, fecha, hora,
-        materias (nombre, grado, seccion, carrera)
+        materias (id, nombre, grado, seccion, carrera)
       `)
       .eq('cedula', estudianteId)
       .gte('fecha', inicio)
@@ -69,18 +73,15 @@ const getAsistenciaEstudiante = async (req, res) => {
     if (institucion_id) query = query.eq('institucion_id', institucion_id);
     
     const { data, error } = await query;
-    
     if (error) throw error;
     
-    // Calcular estadísticas
     const totalDias = Math.ceil((new Date(fin) - new Date(inicio)) / (1000 * 60 * 60 * 24)) + 1;
-    const asistencias = data.length;
+    const asistencias = data?.length || 0;
     const faltas = totalDias - asistencias;
     const porcentaje = totalDias > 0 ? ((asistencias / totalDias) * 100).toFixed(1) : 0;
     
-    // Agrupar por mes
     const porMes = {};
-    data.forEach(asis => {
+    (data || []).forEach(asis => {
       const mesKey = asis.fecha.substring(0, 7);
       if (!porMes[mesKey]) porMes[mesKey] = 0;
       porMes[mesKey]++;
@@ -90,7 +91,7 @@ const getAsistenciaEstudiante = async (req, res) => {
       estudiante_id: estudianteId,
       periodo: { inicio, fin },
       resumen: { totalDias, asistencias, faltas, porcentaje },
-      asistencias: data,
+      asistencias: data || [],
       por_mes: porMes
     });
   } catch (error) {
@@ -99,7 +100,9 @@ const getAsistenciaEstudiante = async (req, res) => {
   }
 };
 
-// Obtener estadísticas completas
+// ============================================
+// OBTENER ESTADÍSTICAS DEL ESTUDIANTE
+// ============================================
 const getEstadisticasEstudiante = async (req, res) => {
   try {
     const { estudianteId } = req.params;
@@ -107,7 +110,6 @@ const getEstadisticasEstudiante = async (req, res) => {
     const institucion_id = req.user.institucion_id;
     const añoActual = año || new Date().getFullYear();
     
-    // Asistencias por mes
     const meses = [];
     for (let mes = 1; mes <= 12; mes++) {
       const inicio = `${añoActual}-${mes.toString().padStart(2, '0')}-01`;
@@ -130,15 +132,14 @@ const getEstadisticasEstudiante = async (req, res) => {
           nombre: new Date(añoActual, mes - 1).toLocaleString('es', { month: 'long' }),
           asistencias: count || 0,
           total_dias: diasEnMes,
-          porcentaje: (( (count || 0) / diasEnMes) * 100).toFixed(1)
+          porcentaje: ((count || 0) / diasEnMes * 100).toFixed(1)
         });
       }
     }
     
-    // Materias con más asistencias
     let materiasQuery = supabase
       .from('asistencia')
-      .select('materias (nombre, id)')
+      .select('materias (id, nombre)')
       .eq('cedula', estudianteId)
       .gte('fecha', `${añoActual}-01-01`)
       .lte('fecha', `${añoActual}-12-31`);
@@ -148,7 +149,7 @@ const getEstadisticasEstudiante = async (req, res) => {
     const { data: asistenciasMaterias } = await materiasQuery;
     
     const materiasCount = {};
-    asistenciasMaterias?.forEach(asis => {
+    (asistenciasMaterias || []).forEach(asis => {
       const nombre = asis.materias?.nombre || 'Sin materia';
       materiasCount[nombre] = (materiasCount[nombre] || 0) + 1;
     });
@@ -170,13 +171,14 @@ const getEstadisticasEstudiante = async (req, res) => {
   }
 };
 
-// Obtener horarios del estudiante
+// ============================================
+// OBTENER HORARIOS DEL ESTUDIANTE
+// ============================================
 const getHorariosEstudiante = async (req, res) => {
   try {
     const { estudianteId } = req.params;
     const institucion_id = req.user.institucion_id;
     
-    // Obtener grado y carrera del estudiante
     const { data: estudiante, error: errEst } = await supabase
       .from('estudiantes')
       .select('grado, carrera, seccion')
@@ -187,7 +189,6 @@ const getHorariosEstudiante = async (req, res) => {
       return res.status(404).json({ error: 'Estudiante no encontrado' });
     }
     
-    // Buscar horarios por grado y carrera
     let query = supabase
       .from('horarios')
       .select('*')
@@ -198,14 +199,12 @@ const getHorariosEstudiante = async (req, res) => {
     if (institucion_id) query = query.eq('institucion_id', institucion_id);
     
     const { data: horarios, error } = await query.order('dia_semana', { ascending: true });
-    
     if (error) throw error;
     
-    // Si no hay horarios específicos, devolver estructura vacía
     const diasSemana = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
     const horariosPorDia = diasSemana.map(dia => ({
       dia,
-      materias: horarios?.filter(h => h.dia_semana === dia) || []
+      materias: (horarios || []).filter(h => h.dia_semana === dia)
     }));
     
     res.json({
@@ -216,27 +215,21 @@ const getHorariosEstudiante = async (req, res) => {
     });
   } catch (error) {
     console.error('Error en getHorariosEstudiante:', error);
-    // Devolver estructura vacía en lugar de error
-    res.json({
-      grado: null,
-      carrera: null,
-      seccion: null,
-      horarios: [],
-      mensaje: 'No hay horarios configurados para este estudiante'
-    });
+    res.json({ horarios: [], mensaje: 'No hay horarios configurados' });
   }
 };
 
-// Obtener alertas del estudiante
+// ============================================
+// OBTENER ALERTAS DEL ESTUDIANTE
+// ============================================
 const getAlertasEstudiante = async (req, res) => {
   try {
     const { estudianteId } = req.params;
     const institucion_id = req.user.institucion_id;
+    const padreId = req.user.id;
     
-    // Obtener alertas (faltas reiteradas, bajo rendimiento)
     const alertas = [];
     
-    // Verificar faltas en los últimos 30 días
     const hoy = new Date();
     const hace30Dias = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const inicio = hace30Dias.toISOString().split('T')[0];
@@ -244,7 +237,7 @@ const getAlertasEstudiante = async (req, res) => {
     
     let queryAsistencias = supabase
       .from('asistencia')
-      .select('id, fecha', { count: 'exact' })
+      .select('id', { count: 'exact' })
       .eq('cedula', estudianteId)
       .gte('fecha', inicio)
       .lte('fecha', fin);
@@ -259,28 +252,30 @@ const getAlertasEstudiante = async (req, res) => {
       
       if (faltas30 >= 5) {
         alertas.push({
-          tipo: 'warning',
-          titulo: '⚠️ Alto índice de faltas',
-          mensaje: `Tiene ${faltas30} faltas en los últimos 30 días.`,
-          fecha: new Date().toISOString(),
+          id: `falta_${Date.now()}`,
+          tipo: 'danger',
+          titulo: '🔴 Alerta de asistencia',
+          mensaje: `Su hijo(a) tiene ${faltas30} faltas en los últimos 30 días. Por favor, comuníquese con la coordinación académica.`,
+          fecha_creacion: new Date().toISOString(),
           leida: false
         });
       } else if (faltas30 >= 3) {
         alertas.push({
-          tipo: 'info',
-          titulo: '📊 Faltas recientes',
-          mensaje: `Tiene ${faltas30} faltas en los últimos 30 días.`,
-          fecha: new Date().toISOString(),
+          id: `falta_${Date.now()}`,
+          tipo: 'warning',
+          titulo: '⚠️ Faltas recientes',
+          mensaje: `Su hijo(a) tiene ${faltas30} faltas en los últimos 30 días.`,
+          fecha_creacion: new Date().toISOString(),
           leida: false
         });
       }
     }
     
-    // Buscar alertas guardadas en BD
     let queryAlertas = supabase
       .from('alertas_padres')
       .select('*')
-      .eq('estudiante_id', estudianteId)
+      .eq('estudiante_cedula', estudianteId)
+      .eq('padre_id', padreId)
       .order('fecha_creacion', { ascending: false });
     
     if (institucion_id) queryAlertas = queryAlertas.eq('institucion_id', institucion_id);
@@ -291,14 +286,16 @@ const getAlertasEstudiante = async (req, res) => {
       alertas.push(...alertasGuardadas);
     }
     
-    res.json(alertas);
+    res.json(alertas.sort((a, b) => new Date(b.fecha_creacion) - new Date(a.fecha_creacion)));
   } catch (error) {
     console.error('Error en getAlertasEstudiante:', error);
     res.json([]);
   }
 };
 
-// Marcar alerta como leída
+// ============================================
+// MARCAR ALERTA COMO LEÍDA
+// ============================================
 const marcarAlertaLeida = async (req, res) => {
   try {
     const { alertaId } = req.params;
@@ -317,7 +314,9 @@ const marcarAlertaLeida = async (req, res) => {
   }
 };
 
-// Generar reporte PDF/Excel del estudiante
+// ============================================
+// GENERAR REPORTE DEL ESTUDIANTE
+// ============================================
 const generarReporteEstudiante = async (req, res) => {
   try {
     const { estudianteId } = req.params;
@@ -327,7 +326,6 @@ const generarReporteEstudiante = async (req, res) => {
     const inicio = fechaInicio || new Date(new Date().getFullYear(), 0, 1).toISOString().split('T')[0];
     const fin = fechaFin || new Date().toISOString().split('T')[0];
     
-    // Obtener datos del estudiante
     const { data: estudiante, error: errEst } = await supabase
       .from('estudiantes')
       .select('*')
@@ -336,12 +334,11 @@ const generarReporteEstudiante = async (req, res) => {
     
     if (errEst) throw errEst;
     
-    // Obtener asistencias del período
     let query = supabase
       .from('asistencia')
       .select(`
         fecha, hora,
-        materias (nombre, grado, seccion, carrera)
+        materias (id, nombre, grado, seccion, carrera)
       `)
       .eq('cedula', estudianteId)
       .gte('fecha', inicio)
@@ -351,12 +348,10 @@ const generarReporteEstudiante = async (req, res) => {
     if (institucion_id) query = query.eq('institucion_id', institucion_id);
     
     const { data: asistencias, error } = await query;
-    
     if (error) throw error;
     
-    // Calcular estadísticas
     const totalDias = Math.ceil((new Date(fin) - new Date(inicio)) / (1000 * 60 * 60 * 24)) + 1;
-    const asistenciasCount = asistencias.length;
+    const asistenciasCount = asistencias?.length || 0;
     const faltas = totalDias - asistenciasCount;
     const porcentaje = totalDias > 0 ? ((asistenciasCount / totalDias) * 100).toFixed(1) : 0;
     
@@ -366,7 +361,7 @@ const generarReporteEstudiante = async (req, res) => {
         cedula: estudiante.cedula,
         grado: estudiante.grado,
         seccion: estudiante.seccion,
-        carrera: estudiante.carrera
+        carrera: estudiante.carrera || 'General'
       },
       periodo: { inicio, fin },
       estadisticas: {
@@ -375,7 +370,7 @@ const generarReporteEstudiante = async (req, res) => {
         faltas,
         porcentaje_asistencia: porcentaje
       },
-      detalle_asistencias: asistencias.map(a => ({
+      detalle_asistencias: (asistencias || []).map(a => ({
         fecha: a.fecha,
         hora: a.hora,
         materia: a.materias?.nombre || 'General'
