@@ -123,6 +123,7 @@ const registrarPadre = async (req, res) => {
         apellido,
         telefono: telefono || null,
         rol: 'padre',
+        password_hash: 'supabase_auth',
         institucion_id: institucion_id || estudianteData?.institucion_id || null
       })
       .select()
