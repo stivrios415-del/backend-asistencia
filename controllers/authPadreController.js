@@ -5,21 +5,22 @@ const { supabase, supabaseAdmin } = require('../config/supabase');
 // ============================================
 const registrarPadre = async (req, res) => {
   console.log('=== INICIO REGISTRO ===');
-  
+  const totalStart = Date.now();
+
   try {
-    const { 
-      email, 
-      password, 
-      nombre, 
-      apellido, 
+    const {
+      email,
+      password,
+      nombre,
+      apellido,
       telefono,
       cedula_hijo,
-      institucion_id 
+      institucion_id
     } = req.body;
 
-    console.log('📝 Datos:', { email, nombre, apellido, cedula_hijo });
+    console.log('📝 Datos recibidos:', { email, nombre, apellido, cedula_hijo, institucion_id });
 
-    // Validaciones
+    // ── Validaciones básicas ──────────────────────────────────
     if (!email || !password || !nombre || !apellido) {
       console.log('❌ Campos faltantes');
       return res.status(400).json({ error: 'Todos los campos son requeridos' });
@@ -30,70 +31,93 @@ const registrarPadre = async (req, res) => {
       return res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres' });
     }
 
-    // 1. Verificar si el email ya está registrado
+    // ── 1. Verificar supabaseAdmin antes de continuar ─────────
+    if (!supabaseAdmin) {
+      console.error('❌ supabaseAdmin no disponible — revisa SUPABASE_SERVICE_ROLE_KEY en .env');
+      return res.status(500).json({ error: 'Error de configuración del servidor' });
+    }
+
+    // ── 2. Verificar si el email ya está registrado ───────────
     console.log('🔍 Verificando email...');
-    const { data: existingUser } = await supabase
+    let t = Date.now();
+    const { data: existingUser, error: emailCheckError } = await supabase
       .from('usuarios')
       .select('email')
       .eq('email', email)
       .maybeSingle();
-    
+    console.log(`⏱️ Email check: ${Date.now() - t}ms`);
+
+    if (emailCheckError) {
+      console.error('❌ Error verificando email:', emailCheckError.message);
+      return res.status(500).json({ error: 'Error al verificar el correo' });
+    }
+
     if (existingUser) {
       console.log('❌ Email ya existe');
       return res.status(400).json({ error: 'Este correo ya está registrado' });
     }
 
-    // 2. Verificar estudiante
+    // ── 3. Verificar estudiante (si se proporcionó cédula) ────
     let estudianteData = null;
     if (cedula_hijo) {
-      console.log('🔍 Buscando estudiante:', cedula_hijo);
+      console.log('🔍 Buscando estudiante con cédula:', cedula_hijo);
+      t = Date.now();
       const { data: estudiante, error: errEst } = await supabase
         .from('estudiantes')
         .select('cedula, nombre, apellido, grado, seccion, carrera, institucion_id')
         .eq('cedula', cedula_hijo)
         .maybeSingle();
+      console.log(`⏱️ Búsqueda estudiante: ${Date.now() - t}ms`);
 
-      if (errEst || !estudiante) {
-        console.log('❌ Estudiante no encontrado');
+      if (errEst) {
+        console.error('❌ Error buscando estudiante:', errEst.message);
+        return res.status(500).json({ error: 'Error al buscar el estudiante' });
+      }
+
+      if (!estudiante) {
+        console.log('❌ Estudiante no encontrado para cédula:', cedula_hijo);
         return res.status(404).json({ error: 'No se encontró un estudiante con esa cédula' });
       }
+
       estudianteData = estudiante;
-      console.log('✅ Estudiante encontrado:', estudiante.nombre);
+      console.log('✅ Estudiante encontrado:', estudiante.nombre, estudiante.apellido);
     }
 
-    // 3. Verificar supabaseAdmin
-    if (!supabaseAdmin) {
-      console.log('❌ supabaseAdmin no disponible');
-      return res.status(500).json({ error: 'Error de configuración del servidor' });
-    }
-
-    // 4. Crear usuario en Auth
+    // ── 4. Crear usuario en Supabase Auth ─────────────────────
     console.log('👤 Creando usuario en Auth...');
+    t = Date.now();
     const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
       email,
       password,
       email_confirm: true,
       user_metadata: { nombre, apellido, rol: 'padre' }
     });
+    console.log(`⏱️ Auth createUser: ${Date.now() - t}ms`);
 
     if (authError) {
       console.error('❌ Error Auth:', authError.message);
+      // Mensaje amigable para email duplicado en Auth
+      if (authError.message.includes('already been registered') || authError.message.includes('already registered')) {
+        return res.status(400).json({ error: 'Este correo ya está registrado' });
+      }
       return res.status(400).json({ error: authError.message });
     }
 
     if (!authData?.user) {
-      console.error('❌ No se creó usuario');
-      return res.status(400).json({ error: 'Error al crear usuario' });
+      console.error('❌ Auth no retornó usuario');
+      return res.status(400).json({ error: 'Error al crear el usuario' });
     }
 
-    console.log('✅ Usuario Auth creado:', authData.user.id);
+    const userId = authData.user.id;
+    console.log('✅ Usuario Auth creado. ID:', userId);
 
-    // 5. Insertar en tabla usuarios
-    console.log('💾 Insertando en usuarios...');
+    // ── 5. Insertar en tabla usuarios ─────────────────────────
+    console.log('💾 Insertando en tabla usuarios...');
+    t = Date.now();
     const { data: usuarioDB, error: userError } = await supabase
       .from('usuarios')
       .insert({
-        id: authData.user.id,
+        id: userId,
         email,
         nombre,
         apellido,
@@ -103,17 +127,21 @@ const registrarPadre = async (req, res) => {
       })
       .select()
       .single();
+    console.log(`⏱️ Insert usuarios: ${Date.now() - t}ms`);
 
     if (userError) {
-      console.error('❌ Error usuarios:', userError.message);
-      await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
-      return res.status(500).json({ error: 'Error al guardar en la base de datos: ' + userError.message });
+      console.error('❌ Error insertando en usuarios:', userError.message);
+      // Rollback: eliminar usuario de Auth
+      await supabaseAdmin.auth.admin.deleteUser(userId);
+      console.log('🔄 Rollback Auth realizado');
+      return res.status(500).json({ error: 'Error al guardar el usuario: ' + userError.message });
     }
 
-    console.log('✅ Usuario guardado');
+    console.log('✅ Usuario guardado en BD');
 
-    // 6. Insertar en tabla padres
-    console.log('💾 Insertando en padres...');
+    // ── 6. Insertar en tabla padres ───────────────────────────
+    console.log('💾 Insertando en tabla padres...');
+    t = Date.now();
     const { data: padreData, error: padreError } = await supabase
       .from('padres')
       .insert({
@@ -124,19 +152,24 @@ const registrarPadre = async (req, res) => {
       })
       .select()
       .single();
+    console.log(`⏱️ Insert padres: ${Date.now() - t}ms`);
 
     if (padreError) {
-      console.error('❌ Error padres:', padreError.message);
-      await supabase.from('usuarios').delete().eq('id', usuarioDB.id);
-      await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
-      return res.status(500).json({ error: 'Error al crear perfil de padre' });
+      console.error('❌ Error insertando en padres:', padreError.message);
+      // Rollback
+      await supabase.from('usuarios').delete().eq('id', userId);
+      await supabaseAdmin.auth.admin.deleteUser(userId);
+      console.log('🔄 Rollback completo realizado');
+      return res.status(500).json({ error: 'Error al crear el perfil de padre' });
     }
 
-    console.log('✅ Padre guardado');
+    console.log('✅ Padre guardado en BD');
 
-    // 7. Vincular estudiante
-    if (cedula_hijo && estudianteData) {
-      console.log('🔗 Vinculando estudiante...');
+    // ── 7. Vincular estudiante (si aplica) ────────────────────
+    let estudianteVinculado = false;
+    if (cedula_hijo && estudianteData && padreData) {
+      console.log('🔗 Vinculando estudiante al padre...');
+      t = Date.now();
       const { error: vinculacionError } = await supabase
         .from('padre_estudiante')
         .insert({
@@ -144,26 +177,36 @@ const registrarPadre = async (req, res) => {
           estudiante_cedula: cedula_hijo,
           institucion_id: institucion_id || estudianteData.institucion_id
         });
+      console.log(`⏱️ Vinculación: ${Date.now() - t}ms`);
 
       if (vinculacionError) {
-        console.warn('⚠️ Error vinculación:', vinculacionError.message);
+        // No es crítico, el padre quedó creado
+        console.warn('⚠️ Error en vinculación (no crítico):', vinculacionError.message);
       } else {
-        console.log('✅ Estudiante vinculado');
+        console.log('✅ Estudiante vinculado exitosamente');
+        estudianteVinculado = true;
       }
     }
 
-    console.log('🎉 REGISTRO EXITOSO');
-    
-    res.status(201).json({
+    console.log(`🎉 REGISTRO EXITOSO — Total: ${Date.now() - totalStart}ms`);
+
+    return res.status(201).json({
       success: true,
       message: 'Registro exitoso. Ya puedes iniciar sesión.',
-      user: { id: usuarioDB.id, email, nombre, apellido, rol: 'padre' },
-      estudianteVinculado: !!cedula_hijo
+      user: {
+        id: usuarioDB.id,
+        email,
+        nombre,
+        apellido,
+        rol: 'padre'
+      },
+      estudianteVinculado
     });
 
   } catch (error) {
-    console.error('❌ ERROR:', error.message);
-    res.status(500).json({ error: 'Error interno del servidor: ' + error.message });
+    console.error(`❌ ERROR INESPERADO (${Date.now() - totalStart}ms):`, error.message);
+    console.error(error.stack);
+    return res.status(500).json({ error: 'Error interno del servidor: ' + error.message });
   }
 };
 
@@ -194,7 +237,7 @@ const vincularEstudiante = async (req, res) => {
       .select('id')
       .eq('padre_id', padreId)
       .eq('estudiante_cedula', cedula_hijo)
-      .single();
+      .maybeSingle();
 
     if (vinculacionExistente) {
       return res.status(400).json({ error: 'Este estudiante ya está vinculado a tu cuenta' });
@@ -209,18 +252,23 @@ const vincularEstudiante = async (req, res) => {
       });
 
     if (vinculacionError) {
+      console.error('Error vinculando estudiante:', vinculacionError.message);
       return res.status(500).json({ error: 'Error al vincular estudiante' });
     }
 
-    res.json({
+    return res.json({
       success: true,
       message: 'Estudiante vinculado exitosamente',
-      estudiante: { cedula: estudiante.cedula, nombre: estudiante.nombre, apellido: estudiante.apellido }
+      estudiante: {
+        cedula: estudiante.cedula,
+        nombre: estudiante.nombre,
+        apellido: estudiante.apellido
+      }
     });
 
   } catch (error) {
     console.error('Error en vincularEstudiante:', error);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    return res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
@@ -230,7 +278,7 @@ const vincularEstudiante = async (req, res) => {
 const buscarEstudianteParaVincular = async (req, res) => {
   try {
     const { cedula } = req.query;
-    const institucion_id = req.user.institucion_id;
+    const institucion_id = req.user?.institucion_id;
 
     if (!cedula) {
       return res.status(400).json({ error: 'La cédula es requerida' });
@@ -245,16 +293,17 @@ const buscarEstudianteParaVincular = async (req, res) => {
       query = query.eq('institucion_id', institucion_id);
     }
 
-    const { data: estudiante, error } = await query.single();
+    const { data: estudiante, error } = await query.maybeSingle();
 
     if (error || !estudiante) {
       return res.status(404).json({ error: 'Estudiante no encontrado' });
     }
 
-    res.json(estudiante);
+    return res.json(estudiante);
+
   } catch (error) {
     console.error('Error en buscarEstudianteParaVincular:', error);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    return res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
@@ -275,7 +324,10 @@ const misEstudiantesVinculados = async (req, res) => {
       `)
       .eq('padre_id', padreId);
 
-    if (error) throw error;
+    if (error) {
+      console.error('Error obteniendo estudiantes vinculados:', error.message);
+      throw error;
+    }
 
     const hijos = (data || []).map(item => ({
       cedula: item.estudiantes?.cedula,
@@ -286,10 +338,11 @@ const misEstudiantesVinculados = async (req, res) => {
       carrera: item.estudiantes?.carrera || 'General'
     }));
 
-    res.json(hijos);
+    return res.json(hijos);
+
   } catch (error) {
     console.error('Error en misEstudiantesVinculados:', error);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    return res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
