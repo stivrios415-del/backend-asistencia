@@ -5,8 +5,29 @@ const { supabase } = require('../config/supabase');
 // ============================================
 const getHijos = async (req, res) => {
   try {
-    const padreId = req.user.id;
+    const userId = req.user.id;
+    console.log('🔍 getHijos - userId:', userId);
 
+    // 1. Obtener el id del padre en tabla padres (diferente al user_id)
+    const { data: padreRow, error: padreErr } = await supabase
+      .from('padres')
+      .select('id')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (padreErr) {
+      console.error('Error buscando padre:', padreErr.message);
+      return res.status(500).json({ error: 'Error buscando perfil de padre' });
+    }
+
+    if (!padreRow) {
+      console.log('⚠️ No se encontró perfil de padre para user_id:', userId);
+      return res.json([]);
+    }
+
+    console.log('✅ padre.id encontrado:', padreRow.id);
+
+    // 2. Buscar hijos vinculados usando el id de padres
     const { data, error } = await supabase
       .from('padre_estudiante')
       .select(`
@@ -15,7 +36,7 @@ const getHijos = async (req, res) => {
           cedula, nombre, apellido, grado, seccion, carrera, foto_url
         )
       `)
-      .eq('padre_id', padreId);
+      .eq('padre_id', padreRow.id);
 
     if (error) throw error;
 
@@ -30,6 +51,7 @@ const getHijos = async (req, res) => {
       foto_url: item.estudiantes?.foto_url
     }));
 
+    console.log(`✅ Hijos encontrados: ${hijos.length}`);
     res.json(hijos);
   } catch (error) {
     console.error('Error en getHijos:', error);
