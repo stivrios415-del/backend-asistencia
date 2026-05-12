@@ -29,16 +29,31 @@ if (supabaseServiceKey) {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
     global: { headers: { 'x-application-name': 'asistencia-backend-admin' } }
   });
+} else {
+  // Si no hay SERVICE_KEY, crear un cliente admin simulado que dará error
+  console.warn('⚠️ Creando supabaseAdmin simulado (no funcional)');
+  supabaseAdmin = {
+    auth: {
+      admin: {
+        createUser: async () => ({ data: null, error: { message: 'SUPABASE_SERVICE_KEY no configurada en el servidor' } }),
+        deleteUser: async () => ({ error: { message: 'SUPABASE_SERVICE_KEY no configurada' } })
+      }
+    }
+  };
 }
 
 // Verificación rápida (opcional)
 (async () => {
-  const { error } = await supabase.from('estudiantes').select('count', { count: 'exact', head: true });
-  if (error) {
-    console.error('⚠️ No se pudo conectar a Supabase. Verifica URL y KEY.');
-    console.error('   Detalle:', error.message);
-  } else {
-    console.log('✅ Conexión a Supabase exitosa');
+  try {
+    const { error } = await supabase.from('estudiantes').select('count', { count: 'exact', head: true });
+    if (error) {
+      console.error('⚠️ No se pudo conectar a Supabase. Verifica URL y KEY.');
+      console.error('   Detalle:', error.message);
+    } else {
+      console.log('✅ Conexión a Supabase exitosa');
+    }
+  } catch (err) {
+    console.error('⚠️ Error de conexión a Supabase:', err.message);
   }
 })();
 
