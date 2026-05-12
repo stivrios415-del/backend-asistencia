@@ -40,27 +40,28 @@ const verificarToken = async (req, res, next) => {
 };
 
 // ============================================
-// VERIFICAR ADMIN
+// VERIFICAR ADMIN (incluye token)
 // ============================================
-const verificarAdmin = (req, res, next) => {
-  if (req.user?.rol !== 'admin') {
-    return res.status(403).json({ error: 'Acceso denegado. Se requieren permisos de administrador.' });
-  }
-  next();
+const verificarAdmin = async (req, res, next) => {
+  await verificarToken(req, res, () => {
+    if (req.user?.rol !== 'admin') {
+      return res.status(403).json({ error: 'Acceso denegado. Se requieren permisos de administrador.' });
+    }
+    next();
+  });
 };
 
 // ============================================
-// VERIFICAR PROFESOR
+// VERIFICAR PROFESOR (incluye token)
 // ============================================
-const verificarProfesor = [
-  verificarToken,
-  (req, res, next) => {
+const verificarProfesor = async (req, res, next) => {
+  await verificarToken(req, res, () => {
     if (req.user?.rol !== 'profesor' && req.user?.rol !== 'admin') {
       return res.status(403).json({ error: 'Acceso denegado. Se requieren permisos de profesor.' });
     }
     next();
-  }
-];
+  });
+};
 
 // ============================================
 // VERIFICAR PADRE
