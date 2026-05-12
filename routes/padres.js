@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { verificarPadre } = require('../middleware/auth');
+const { verificarToken, verificarPadre } = require('../middleware/auth');
 const {
   getHijos,
   getAsistenciaEstudiante,
@@ -11,7 +11,8 @@ const {
   generarReporteEstudiante
 } = require('../controllers/padreController');
 
-// Todas las rutas requieren autenticación de padre
+// Todas las rutas requieren: 1) token válido, 2) rol padre
+router.use(verificarToken);
 router.use(verificarPadre);
 
 // Obtener hijos del padre
