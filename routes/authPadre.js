@@ -8,10 +8,10 @@ const {
   misEstudiantesVinculados
 } = require('../controllers/authPadreController');
 
-// ── Ruta pública (sin autenticación) ──────────────────────
+// Ruta pública
 router.post('/registro', registrarPadre);
 
-// ── Rutas protegidas (token + rol padre) ──────────────────
+// Rutas protegidas
 router.use(verificarToken);
 router.use(verificarPadre);
 
