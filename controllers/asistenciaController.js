@@ -1,6 +1,9 @@
 const { supabase } = require('../config/supabase');
 const ExcelJS = require('exceljs');
 const JSZip = require('jszip');
+const { notificarTardanza } = require('../services/notificacionService');
+
+const HORA_LIMITE_TARDANZA = '07:30'; // Cambia según horario del colegio
 
 // ========== HELPER: escapar XML ==========
 function escapeXml(str) {
@@ -15,11 +18,7 @@ function escapeXml(str) {
 // ========== HELPER: obtener datos de institución ==========
 async function obtenerInstitucion(institucion_id) {
   if (!institucion_id) {
-    return {
-      nombre: 'Sistema de Asistencia',
-      color_primario: '#143C65',
-      color_secundario: '#256D5B',
-    };
+    return { nombre: 'Sistema de Asistencia', color_primario: '#143C65', color_secundario: '#256D5B' };
   }
   const { data, error } = await supabase
     .from('instituciones')
@@ -27,11 +26,7 @@ async function obtenerInstitucion(institucion_id) {
     .eq('id', institucion_id)
     .single();
   if (error || !data) {
-    return {
-      nombre: 'Sistema de Asistencia',
-      color_primario: '#143C65',
-      color_secundario: '#256D5B',
-    };
+    return { nombre: 'Sistema de Asistencia', color_primario: '#143C65', color_secundario: '#256D5B' };
   }
   return data;
 }
@@ -208,7 +203,7 @@ function generarChartPieXml(categorias, valores, titulo) {
 </c:chartSpace>`;
 }
 
-// ========== HELPER: inyectar gráficas XML directamente en el xlsx via JSZip ==========
+// ========== HELPER: inyectar gráficas XML en xlsx via JSZip ==========
 async function inyectarGraficasEnXlsx(workbookBuffer, graficas) {
   const zip = await JSZip.loadAsync(workbookBuffer);
   let wbXml = await zip.file('xl/workbook.xml').async('string');
@@ -221,26 +216,20 @@ async function inyectarGraficasEnXlsx(workbookBuffer, graficas) {
     return n > max ? n : max;
   }, 0);
   graficas.forEach((grafica, idx) => {
-    sheetCount++;
-    maxRId++;
-    const chartId = idx + 1;
-    const drawingId = idx + 1;
-    const sheetId = sheetCount;
-    const rId = `rId${maxRId}`;
+    sheetCount++; maxRId++;
+    const chartId = idx + 1, drawingId = idx + 1, sheetId = sheetCount, rId = `rId${maxRId}`;
     const nombre = grafica.nombre || `Grafica${chartId}`;
     const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
   xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <sheetData/>
-  <drawing r:id="rId1"/>
+  <sheetData/><drawing r:id="rId1"/>
 </worksheet>`;
     const drawingXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
   xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
   xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <xdr:absoluteAnchor>
-    <xdr:pos x="228600" y="228600"/>
-    <xdr:ext cx="9144000" cy="6858000"/>
+    <xdr:pos x="228600" y="228600"/><xdr:ext cx="9144000" cy="6858000"/>
     <xdr:graphicFrame macro="">
       <xdr:nvGraphicFramePr>
         <xdr:cNvPr id="${chartId + 2}" name="Chart ${chartId}"/>
@@ -269,10 +258,8 @@ async function inyectarGraficasEnXlsx(workbookBuffer, graficas) {
     zip.file(`xl/drawings/_rels/drawing${drawingId}.xml.rels`, drawingRelsXml);
     zip.file(`xl/worksheets/sheet${sheetId}.xml`, sheetXml);
     zip.file(`xl/worksheets/_rels/sheet${sheetId}.xml.rels`, sheetRelsXml);
-    wbXml = wbXml.replace('</sheets>',
-      `<sheet name="${nombre}" sheetId="${sheetId}" r:id="${rId}"/></sheets>`);
-    wbRels = wbRels.replace('</Relationships>',
-      `<Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${sheetId}.xml"/></Relationships>`);
+    wbXml = wbXml.replace('</sheets>', `<sheet name="${nombre}" sheetId="${sheetId}" r:id="${rId}"/></sheets>`);
+    wbRels = wbRels.replace('</Relationships>', `<Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${sheetId}.xml"/></Relationships>`);
     contentTypes = contentTypes.replace('</Types>',
       `<Override PartName="/xl/worksheets/sheet${sheetId}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>` +
       `<Override PartName="/xl/charts/chart${chartId}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>` +
@@ -370,33 +357,46 @@ async function obtenerEstudiantesFiltrados(filtros, institucion_id) {
   });
 }
 
-// ========== REGISTRAR ASISTENCIA ==========
+// ========== REGISTRAR ASISTENCIA (CON NOTIFICACIONES) ==========
 const registrarAsistencia = async (req, res) => {
   const { cedula, materiaId } = req.body;
   const institucion_id = req.user.institucion_id;
+
   if (!cedula) return res.status(400).json({ error: 'Cédula no proporcionada' });
   if (!materiaId) return res.status(400).json({ error: 'Debe especificar la materia/clase' });
+
   const { data: materia, error: errMateria } = await supabase
     .from('materias').select('grado, carrera').eq('id', materiaId).single();
   if (errMateria || !materia) return res.status(404).json({ error: 'La clase seleccionada no existe' });
+
   const { data: estudiante, error: errEstudiante } = await supabase
     .from('estudiantes').select('cedula, nombre, apellido, grado, seccion, carrera, foto_url')
     .eq('cedula', cedula).single();
   if (errEstudiante || !estudiante) return res.status(404).json({ error: 'Estudiante no encontrado' });
+
   if (normalizarTexto(String(estudiante.grado)) !== normalizarTexto(String(materia.grado)) ||
       normalizarTexto(estudiante.carrera) !== normalizarTexto(materia.carrera)) {
     return res.status(400).json({
       error: `Este estudiante no pertenece a esta clase. Solo se permite para grado ${materia.grado} - ${materia.carrera}.`
     });
   }
-  const hoy = new Date().toISOString().split('T')[0];
+
+  const hoy   = new Date().toISOString().split('T')[0];
   const ahora = new Date().toLocaleTimeString('en-GB', { hour12: false });
+
   const { data: yaRegistro } = await supabase.from('asistencia').select('id')
     .eq('cedula', cedula).eq('fecha', hoy).eq('materia_id', materiaId).maybeSingle();
-  if (yaRegistro) return res.status(400).json({ error: 'Este estudiante ya registró asistencia en esta clase hoy', estudiante });
+  if (yaRegistro) return res.status(400).json({
+    error: 'Este estudiante ya registró asistencia en esta clase hoy', estudiante
+  });
+
   const { error: errAsistencia } = await supabase.from('asistencia')
     .insert([{ cedula, fecha: hoy, hora: ahora, materia_id: materiaId, institucion_id }]);
-  if (errAsistencia) return res.status(500).json({ error: 'Error al registrar asistencia: ' + errAsistencia.message });
+  if (errAsistencia) return res.status(500).json({
+    error: 'Error al registrar asistencia: ' + errAsistencia.message
+  });
+
+  // ── Responder al profesor inmediatamente ──
   res.json({
     message: 'Asistencia registrada exitosamente',
     estudiante: {
@@ -406,6 +406,20 @@ const registrarAsistencia = async (req, res) => {
     },
     hora: ahora
   });
+
+  // ── Detectar tardanza y notificar en background ──
+  try {
+    const [hLim, mLim]     = HORA_LIMITE_TARDANZA.split(':').map(Number);
+    const [hAhora, mAhora] = ahora.split(':').map(Number);
+    const esTarde = hAhora > hLim || (hAhora === hLim && mAhora > mLim);
+
+    if (esTarde) {
+      console.log(`⏰ Tardanza detectada: ${estudiante.nombre} ${estudiante.apellido} — ${ahora}`);
+      notificarTardanza(cedula, hoy, ahora, HORA_LIMITE_TARDANZA).catch(console.error);
+    }
+  } catch (e) {
+    console.error('Error verificando tardanza:', e.message);
+  }
 };
 
 // ========== ASISTENCIA DEL DÍA ==========
@@ -519,13 +533,11 @@ const exportarReporteExcel = async (req, res) => {
   const { data, error } = await query;
   if (error) return res.status(400).json({ error: error.message });
 
-  const institucion = await obtenerInstitucion(institucion_id);
-  const colorPrimario = hexToArgb(institucion.color_primario);
-
+  const institucion    = await obtenerInstitucion(institucion_id);
+  const colorPrimario  = hexToArgb(institucion.color_primario);
   const workbook = new ExcelJS.Workbook();
   const ws = workbook.addWorksheet('Reporte Asistencia');
 
-  // Encabezado con nombre de institución
   ws.mergeCells('A1:G1');
   ws.getCell('A1').value = institucion.nombre.toUpperCase();
   ws.getCell('A1').font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
@@ -537,7 +549,6 @@ const exportarReporteExcel = async (req, res) => {
   ws.getCell('A2').value = `Reporte de Asistencia — ${fechaInicio} al ${fechaFin}`;
   ws.getCell('A2').font = { italic: true, size: 11, color: { argb: 'FF555555' } };
   ws.getCell('A2').alignment = { horizontal: 'center' };
-
   ws.addRow([]);
 
   ws.columns = [
@@ -589,10 +600,9 @@ const exportarReporteCompletoExcel = async (req, res) => {
   const institucion_id = req.user.institucion_id;
   if (!fecha) return res.status(400).json({ error: 'Debe proporcionar una fecha (YYYY-MM-DD)' });
 
-  // Obtener datos de la institución dinámicamente
-  const institucion = await obtenerInstitucion(institucion_id);
-  const colorPrimario = hexToArgb(institucion.color_primario);
-  const colorSecundario = hexToArgb(institucion.color_secundario);
+  const institucion       = await obtenerInstitucion(institucion_id);
+  const colorPrimario     = hexToArgb(institucion.color_primario);
+  const colorSecundario   = hexToArgb(institucion.color_secundario);
   const nombreInstitucion = institucion.nombre;
 
   const subirExcelVacio = async (mensaje) => {
@@ -623,7 +633,7 @@ const exportarReporteCompletoExcel = async (req, res) => {
       }
       queryAsistencias = queryAsistencias.in('materia_id', idsMaterias);
     }
-    if (grado) queryAsistencias = queryAsistencias.filter('materias.grado', 'eq', grado);
+    if (grado)   queryAsistencias = queryAsistencias.filter('materias.grado',   'eq', grado);
     if (seccion) queryAsistencias = queryAsistencias.filter('materias.seccion', 'eq', seccion);
     const { data: asistencias, error: errAsistencias } = await queryAsistencias;
     if (errAsistencias) throw errAsistencias;
@@ -636,7 +646,7 @@ const exportarReporteCompletoExcel = async (req, res) => {
       grupos.get(materia.id).asistencias.push({ estudiante: asis.estudiantes, hora: asis.hora });
     });
 
-    const workbook = new ExcelJS.Workbook();
+    const workbook  = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet(`Asistencia_${fecha}`);
     const headerStyle = {
       font: { bold: true, color: { argb: 'FFFFFFFF' } },
@@ -650,23 +660,21 @@ const exportarReporteCompletoExcel = async (req, res) => {
 
     let currentRow = 1;
 
-    // ===== ENCABEZADO CON NOMBRE DE INSTITUCIÓN =====
     worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
     worksheet.getCell(`A${currentRow}`).value = nombreInstitucion.toUpperCase();
-    worksheet.getCell(`A${currentRow}`).font = { bold: true, size: 16, color: { argb: 'FFFFFFFF' } };
-    worksheet.getCell(`A${currentRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorPrimario } };
+    worksheet.getCell(`A${currentRow}`).font  = { bold: true, size: 16, color: { argb: 'FFFFFFFF' } };
+    worksheet.getCell(`A${currentRow}`).fill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorPrimario } };
     worksheet.getCell(`A${currentRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
     worksheet.getRow(currentRow).height = 35;
     currentRow++;
 
-    // Subtítulo con fecha
     const fechaLegible = new Date(fecha + 'T12:00:00').toLocaleDateString('es-ES', {
       weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'America/Tegucigalpa'
     });
     worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
     worksheet.getCell(`A${currentRow}`).value = `Reporte de Asistencia — ${fechaLegible}`;
-    worksheet.getCell(`A${currentRow}`).font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
-    worksheet.getCell(`A${currentRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorSecundario } };
+    worksheet.getCell(`A${currentRow}`).font  = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
+    worksheet.getCell(`A${currentRow}`).fill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorSecundario } };
     worksheet.getCell(`A${currentRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
     worksheet.getRow(currentRow).height = 25;
     currentRow++;
@@ -674,7 +682,7 @@ const exportarReporteCompletoExcel = async (req, res) => {
     if (nombreProfesor) {
       worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
       worksheet.getCell(`A${currentRow}`).value = `Generado por: ${nombreProfesor}`;
-      worksheet.getCell(`A${currentRow}`).font = { italic: true, size: 10, color: { argb: 'FF555555' } };
+      worksheet.getCell(`A${currentRow}`).font  = { italic: true, size: 10, color: { argb: 'FF555555' } };
       worksheet.getCell(`A${currentRow}`).alignment = { horizontal: 'center' };
       currentRow++;
     }
@@ -684,11 +692,10 @@ const exportarReporteCompletoExcel = async (req, res) => {
     if (grupos.size === 0) {
       worksheet.addRow(['No se registraron asistencias en esta fecha.']);
     } else {
-      // ===== RESUMEN DE CLASES =====
       worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
       worksheet.getCell(`A${currentRow}`).value = 'RESUMEN DE CLASES';
-      worksheet.getCell(`A${currentRow}`).font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
-      worksheet.getCell(`A${currentRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorPrimario } };
+      worksheet.getCell(`A${currentRow}`).font  = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
+      worksheet.getCell(`A${currentRow}`).fill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorPrimario } };
       worksheet.getCell(`A${currentRow}`).alignment = { horizontal: 'center' };
       worksheet.getRow(currentRow).height = 22;
       currentRow++;
@@ -705,10 +712,8 @@ const exportarReporteCompletoExcel = async (req, res) => {
       gruposOrdenadosResumen.forEach((grupo, idx) => {
         const mat = grupo.materia;
         const row = worksheet.addRow([
-          mat.nombre || mat.carrera || 'Clase',
-          `${mat.grado}°`, mat.seccion,
-          mat.profesores?.nombre || 'Sin profesor',
-          grupo.asistencias.length
+          mat.nombre || mat.carrera || 'Clase', `${mat.grado}°`, mat.seccion,
+          mat.profesores?.nombre || 'Sin profesor', grupo.asistencias.length
         ]);
         row.getCell(5).font = { bold: true, color: { argb: colorSecundario } };
         if (idx % 2 !== 0) row.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF7FAFC' } };
@@ -720,22 +725,19 @@ const exportarReporteCompletoExcel = async (req, res) => {
       totalRow.getCell(4).font = { bold: true };
       totalRow.getCell(5).font = { bold: true, color: { argb: colorPrimario } };
       currentRow++;
-
       worksheet.addRow([]); currentRow++;
       worksheet.addRow([]); currentRow++;
 
-      // ===== DETALLE POR CLASE =====
       const gruposOrdenados = Array.from(grupos.values()).sort((a, b) => {
         if (a.materia.grado !== b.materia.grado) return String(a.materia.grado).localeCompare(String(b.materia.grado));
         return String(a.materia.seccion).localeCompare(String(b.materia.seccion));
       });
 
       for (const grupo of gruposOrdenados) {
-        const mat = grupo.materia;
+        const mat        = grupo.materia;
         const nombreProf = mat.profesores?.nombre || 'Sin profesor';
-        const totalAlumnos = grupo.asistencias.length;
+        const totalAlum  = grupo.asistencias.length;
 
-        // Título de clase con color de institución
         worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
         worksheet.getCell(`A${currentRow}`).value =
           `${mat.nombre || mat.carrera || 'Clase'} — Grado ${mat.grado}° Sección ${mat.seccion}`;
@@ -746,14 +748,11 @@ const exportarReporteCompletoExcel = async (req, res) => {
         currentRow++;
 
         worksheet.mergeCells(`A${currentRow}:H${currentRow}`);
-        worksheet.getCell(`A${currentRow}`).value =
-          `👤 Profesor: ${nombreProf}   |   👥 Total presentes: ${totalAlumnos}`;
-        worksheet.getCell(`A${currentRow}`).font = { italic: true, size: 10, color: { argb: 'FF555555' } };
+        worksheet.getCell(`A${currentRow}`).value = `👤 Profesor: ${nombreProf}   |   👥 Total presentes: ${totalAlum}`;
+        worksheet.getCell(`A${currentRow}`).font  = { italic: true, size: 10, color: { argb: 'FF555555' } };
         currentRow++;
 
-        const colHeaders = worksheet.addRow([
-          'Cédula', 'Nombre', 'Apellido', 'Grado (Est.)', 'Sección (Est.)', 'Carrera', 'Hora de Escaneo'
-        ]);
+        const colHeaders = worksheet.addRow(['Cédula', 'Nombre', 'Apellido', 'Grado (Est.)', 'Sección (Est.)', 'Carrera', 'Hora de Escaneo']);
         colHeaders.eachCell(cell => { cell.style = subHeaderStyle; });
         currentRow++;
 
@@ -764,9 +763,7 @@ const exportarReporteCompletoExcel = async (req, res) => {
             est?.grado || '', est?.seccion || '', est?.carrera || '', item.hora || ''
           ]);
           dataRow.eachCell(cell => {
-            cell.border = {
-              bottom: { style: 'hair', color: { argb: 'FFE2E8F0' } }
-            };
+            cell.border = { bottom: { style: 'hair', color: { argb: 'FFE2E8F0' } } };
           });
           currentRow++;
         }
@@ -788,8 +785,7 @@ const exportarReporteCompletoExcel = async (req, res) => {
     try {
       await supabase.from('reportes_generados').insert([{
         fecha_inicio: fecha, fecha_fin: fecha, archivo_url: urlData.publicUrl,
-        usuario: usuario || 'profesor', grado: grado || null, seccion: seccion || null,
-        institucion_id
+        usuario: usuario || 'profesor', grado: grado || null, seccion: seccion || null, institucion_id
       }]);
     } catch (e) { console.warn('⚠️ Metadata no guardada:', e.message); }
     res.json({ success: true, url: urlData.publicUrl });
@@ -821,9 +817,9 @@ const getEstadisticas = async (req, res) => {
     } else {
       const hoy = new Date();
       inicio = new Date(hoy.getFullYear(), hoy.getMonth(), 1).toISOString().split('T')[0];
-      fin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).toISOString().split('T')[0];
+      fin    = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).toISOString().split('T')[0];
     }
-    const filtros = await obtenerFiltrosProfesor(profesorEmail, institucion_id);
+    const filtros    = await obtenerFiltrosProfesor(profesorEmail, institucion_id);
     const estudiantes = await obtenerEstudiantesFiltrados(filtros, institucion_id);
     console.log('📊 Estudiantes:', estudiantes.length);
     if (estudiantes.length === 0) {
@@ -849,15 +845,13 @@ const getEstadisticas = async (req, res) => {
     asistencias.forEach(a => { asistenciaCount[a.cedula] = (asistenciaCount[a.cedula] || 0) + 1; });
     const totalDias = Math.ceil((new Date(fin) - new Date(inicio)) / (1000 * 60 * 60 * 24)) + 1;
     const estadisticasArr = estudiantes.map(est => {
-      const count = asistenciaCount[est.cedula] || 0;
+      const count  = asistenciaCount[est.cedula] || 0;
       const faltas = totalDias - count;
       return { ...est, asistencias: count, faltas: faltas > 0 ? faltas : 0, totalDias };
     });
-    const masFaltas = [...estadisticasArr].filter(est => est.faltas > 0)
-      .sort((a, b) => b.faltas - a.faltas).slice(0, 10);
-    const mejorRecord = [...estadisticasArr].filter(est => est.asistencias > 0)
-      .sort((a, b) => b.asistencias - a.asistencias).slice(0, 10);
-    const resumenMap = {};
+    const masFaltas    = [...estadisticasArr].filter(est => est.faltas > 0).sort((a, b) => b.faltas - a.faltas).slice(0, 10);
+    const mejorRecord  = [...estadisticasArr].filter(est => est.asistencias > 0).sort((a, b) => b.asistencias - a.asistencias).slice(0, 10);
+    const resumenMap   = {};
     estadisticasArr.forEach(est => {
       const key = `${est.grado}|${est.seccion || ''}|${est.carrera || 'Sin carrera'}`;
       if (!resumenMap[key]) resumenMap[key] = {
@@ -887,13 +881,12 @@ const exportarEstadisticasExcel = async (req, res) => {
     const { fechaInicio, fechaFin, profesorEmail } = req.query;
     const institucion_id = req.user.institucion_id;
 
-    // Obtener datos de institución dinámicamente
-    const institucion = await obtenerInstitucion(institucion_id);
-    const colorPrimario = hexToArgb(institucion.color_primario);
-    const colorSecundario = hexToArgb(institucion.color_secundario);
-    const colorPrimarioHex = institucion.color_primario.replace('#', '');
+    const institucion        = await obtenerInstitucion(institucion_id);
+    const colorPrimario      = hexToArgb(institucion.color_primario);
+    const colorSecundario    = hexToArgb(institucion.color_secundario);
+    const colorPrimarioHex   = institucion.color_primario.replace('#', '');
     const colorSecundarioHex = institucion.color_secundario.replace('#', '');
-    const nombreInstitucion = institucion.nombre;
+    const nombreInstitucion  = institucion.nombre;
 
     let inicio, fin;
     if (fechaInicio && fechaFin) {
@@ -901,12 +894,12 @@ const exportarEstadisticasExcel = async (req, res) => {
     } else {
       const hoy = new Date();
       inicio = new Date(hoy.getFullYear(), hoy.getMonth(), 1).toISOString().split('T')[0];
-      fin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).toISOString().split('T')[0];
+      fin    = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).toISOString().split('T')[0];
     }
 
-    const filtros = await obtenerFiltrosProfesor(profesorEmail, institucion_id);
+    const filtros     = await obtenerFiltrosProfesor(profesorEmail, institucion_id);
     const estudiantes = await obtenerEstudiantesFiltrados(filtros, institucion_id);
-    let asistencias = [];
+    let asistencias   = [];
     const idsMaterias = await obtenerIdsMateriaProfesor(profesorEmail, institucion_id);
     if (idsMaterias === null) {
       let q = supabase.from('asistencia').select('cedula, fecha').gte('fecha', inicio).lte('fecha', fin);
@@ -929,9 +922,9 @@ const exportarEstadisticasExcel = async (req, res) => {
       const faltas = totalDias - count;
       return { ...est, asistencias: count, faltas: faltas > 0 ? faltas : 0, totalDias };
     });
-    const masFaltas = [...estadisticasArr].sort((a, b) => b.faltas - a.faltas).slice(0, 10);
+    const masFaltas   = [...estadisticasArr].sort((a, b) => b.faltas - a.faltas).slice(0, 10);
     const mejorRecord = [...estadisticasArr].sort((a, b) => b.asistencias - a.asistencias).slice(0, 10);
-    const resumenMap = {};
+    const resumenMap  = {};
     estadisticasArr.forEach(est => {
       const key = `${est.grado}|${est.carrera || 'Sin carrera'}`;
       if (!resumenMap[key]) resumenMap[key] = {
@@ -939,7 +932,7 @@ const exportarEstadisticasExcel = async (req, res) => {
         totalAsistencias: 0, totalFaltas: 0, totalEstudiantes: 0
       };
       resumenMap[key].totalAsistencias += est.asistencias;
-      resumenMap[key].totalFaltas += est.faltas;
+      resumenMap[key].totalFaltas      += est.faltas;
       resumenMap[key].totalEstudiantes++;
     });
     const resumenArray = Object.values(resumenMap).map(item => ({
@@ -952,18 +945,14 @@ const exportarEstadisticasExcel = async (req, res) => {
     });
 
     const workbook = new ExcelJS.Workbook();
-
-    // Estilos dinámicos basados en colores de institución
     const headerStyle = {
       font: { bold: true, color: { argb: 'FFFFFFFF' } },
       fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: colorPrimario } },
       alignment: { horizontal: 'center', vertical: 'middle' },
       border: { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } }
     };
-    const dataStyle = {
-      border: { top: { style: 'thin', color: { argb: 'FFE2E8F0' } }, bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } }, left: { style: 'thin', color: { argb: 'FFE2E8F0' } }, right: { style: 'thin', color: { argb: 'FFE2E8F0' } } }
-    };
-    const altRowStyle = { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF7FAFC' } }, border: dataStyle.border };
+    const dataStyle    = { border: { top: { style: 'thin', color: { argb: 'FFE2E8F0' } }, bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } }, left: { style: 'thin', color: { argb: 'FFE2E8F0' } }, right: { style: 'thin', color: { argb: 'FFE2E8F0' } } } };
+    const altRowStyle  = { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF7FAFC' } }, border: dataStyle.border };
     const colsEst = [
       { header: 'Cédula', key: 'cedula', width: 16 }, { header: 'Nombre', key: 'nombre', width: 22 },
       { header: 'Apellido', key: 'apellido', width: 22 }, { header: 'Grado', key: 'grado', width: 8 },
@@ -972,33 +961,27 @@ const exportarEstadisticasExcel = async (req, res) => {
       { header: 'Total días', key: 'totalDias', width: 12 }
     ];
 
-    // ===== HOJA DASHBOARD =====
+    // Dashboard
     const wsDash = workbook.addWorksheet('Dashboard');
-
-    // Nombre de institución como encabezado principal
     wsDash.mergeCells('A1:E1');
     wsDash.getCell('A1').value = nombreInstitucion.toUpperCase();
-    wsDash.getCell('A1').font = { bold: true, size: 16, color: { argb: 'FFFFFFFF' } };
-    wsDash.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorPrimario } };
+    wsDash.getCell('A1').font  = { bold: true, size: 16, color: { argb: 'FFFFFFFF' } };
+    wsDash.getCell('A1').fill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorPrimario } };
     wsDash.getCell('A1').alignment = { horizontal: 'center', vertical: 'middle' };
     wsDash.getRow(1).height = 35;
-
     wsDash.mergeCells('A2:E2');
     wsDash.getCell('A2').value = `ESTADÍSTICAS DE ASISTENCIA — ${inicio} al ${fin}`;
-    wsDash.getCell('A2').font = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } };
-    wsDash.getCell('A2').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorSecundario } };
+    wsDash.getCell('A2').font  = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } };
+    wsDash.getCell('A2').fill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorSecundario } };
     wsDash.getCell('A2').alignment = { horizontal: 'center', vertical: 'middle' };
     wsDash.getRow(2).height = 25;
-
     wsDash.mergeCells('A3:E3');
     wsDash.getCell('A3').value = `Estudiantes: ${estudiantes.length}  |  Días del período: ${totalDias}  |  Asistencias totales: ${asistencias.length}`;
-    wsDash.getCell('A3').font = { size: 10, italic: true, color: { argb: 'FF555555' } };
+    wsDash.getCell('A3').font  = { size: 10, italic: true, color: { argb: 'FF555555' } };
     wsDash.getCell('A3').alignment = { horizontal: 'center' };
-
     wsDash.addRow([]);
     wsDash.getRow(5).values = ['Grado / Carrera', 'Total Asistencias', 'Total Faltas', 'Promedio', 'Estudiantes'];
     wsDash.getRow(5).eachCell(cell => { cell.style = headerStyle; });
-
     resumenArray.forEach((item, idx) => {
       const r = wsDash.addRow([`${item.grado}° ${item.carrera}`, item.totalAsistencias, item.totalFaltas, parseFloat(item.promedioAsistencias), item.totalEstudiantes]);
       r.eachCell(cell => { cell.style = idx % 2 === 0 ? dataStyle : altRowStyle; });
@@ -1006,15 +989,14 @@ const exportarEstadisticasExcel = async (req, res) => {
       r.getCell(3).font = { bold: true, color: { argb: 'FFE53E3E' } };
     });
 
-    // ===== HOJA MÁS FALTAS =====
+    // Más faltas
     const wsFaltas = workbook.addWorksheet('Mas faltas');
     wsFaltas.mergeCells('A1:I1');
     wsFaltas.getCell('A1').value = `${nombreInstitucion} — TOP 10: ALUMNOS CON MÁS FALTAS`;
-    wsFaltas.getCell('A1').font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
-    wsFaltas.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE53E3E' } };
+    wsFaltas.getCell('A1').font  = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
+    wsFaltas.getCell('A1').fill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE53E3E' } };
     wsFaltas.getCell('A1').alignment = { horizontal: 'center' };
-    wsFaltas.addRow([]);
-    wsFaltas.columns = colsEst;
+    wsFaltas.addRow([]); wsFaltas.columns = colsEst;
     wsFaltas.getRow(3).values = colsEst.map(c => c.header);
     wsFaltas.getRow(3).eachCell(cell => { cell.style = headerStyle; });
     masFaltas.forEach((est, idx) => {
@@ -1023,15 +1005,14 @@ const exportarEstadisticasExcel = async (req, res) => {
       if (est.faltas >= 3) r.getCell(8).font = { bold: true, color: { argb: 'FFCC0000' } };
     });
 
-    // ===== HOJA MEJOR RÉCORD =====
+    // Mejor record
     const wsRecord = workbook.addWorksheet('Mejor record');
     wsRecord.mergeCells('A1:I1');
     wsRecord.getCell('A1').value = `${nombreInstitucion} — TOP 10: MEJOR RÉCORD DE ASISTENCIA`;
-    wsRecord.getCell('A1').font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
-    wsRecord.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorSecundario } };
+    wsRecord.getCell('A1').font  = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
+    wsRecord.getCell('A1').fill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorSecundario } };
     wsRecord.getCell('A1').alignment = { horizontal: 'center' };
-    wsRecord.addRow([]);
-    wsRecord.columns = colsEst;
+    wsRecord.addRow([]); wsRecord.columns = colsEst;
     wsRecord.getRow(3).values = colsEst.map(c => c.header);
     wsRecord.getRow(3).eachCell(cell => { cell.style = headerStyle; });
     mejorRecord.forEach((est, idx) => {
@@ -1040,12 +1021,12 @@ const exportarEstadisticasExcel = async (req, res) => {
       r.getCell(7).font = { bold: true, color: { argb: colorSecundario } };
     });
 
-    // ===== HOJA RESUMEN =====
+    // Resumen
     const wsResumen = workbook.addWorksheet('Resumen');
     wsResumen.mergeCells('A1:F1');
     wsResumen.getCell('A1').value = `${nombreInstitucion} — RESUMEN POR GRADO Y CARRERA`;
-    wsResumen.getCell('A1').font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
-    wsResumen.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorPrimario } };
+    wsResumen.getCell('A1').font  = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
+    wsResumen.getCell('A1').fill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorPrimario } };
     wsResumen.getCell('A1').alignment = { horizontal: 'center' };
     wsResumen.addRow([]);
     wsResumen.columns = [
@@ -1062,41 +1043,29 @@ const exportarEstadisticasExcel = async (req, res) => {
       r.eachCell(cell => { cell.style = idx % 2 === 0 ? dataStyle : altRowStyle; });
     });
 
-    // ===== GRÁFICAS =====
+    // Gráficas
     const bufferBase = await workbook.xlsx.writeBuffer();
-    const graficas = [];
+    const graficas   = [];
     if (resumenArray.length > 0) {
       const cats = resumenArray.map(r => `${r.grado}° ${r.carrera}`);
-      graficas.push({
-        nombre: 'Graf. Asistencias',
-        chartXml: generarChartBarrasXml([
-          { nombre: 'Asistencias', categorias: cats, valores: resumenArray.map(r => r.totalAsistencias) },
-          { nombre: 'Faltas', categorias: cats, valores: resumenArray.map(r => r.totalFaltas) }
-        ], `${nombreInstitucion} — Asistencias vs Faltas`, colorPrimarioHex, colorSecundarioHex)
-      });
-      graficas.push({
-        nombre: 'Graf. Distribucion',
-        chartXml: generarChartPieXml(cats, resumenArray.map(r => r.totalAsistencias), `${nombreInstitucion} — Distribución de Asistencias`)
-      });
+      graficas.push({ nombre: 'Graf. Asistencias', chartXml: generarChartBarrasXml([
+        { nombre: 'Asistencias', categorias: cats, valores: resumenArray.map(r => r.totalAsistencias) },
+        { nombre: 'Faltas',      categorias: cats, valores: resumenArray.map(r => r.totalFaltas) }
+      ], `${nombreInstitucion} — Asistencias vs Faltas`, colorPrimarioHex, colorSecundarioHex) });
+      graficas.push({ nombre: 'Graf. Distribucion', chartXml: generarChartPieXml(cats, resumenArray.map(r => r.totalAsistencias), `${nombreInstitucion} — Distribución de Asistencias`) });
     }
     if (masFaltas.length > 0) {
       const names = masFaltas.map(e => `${e.nombre} ${e.apellido}`);
-      graficas.push({
-        nombre: 'Graf. Mas Faltas',
-        chartXml: generarChartBarrasXml([
-          { nombre: 'Faltas', categorias: names, valores: masFaltas.map(e => e.faltas) },
-          { nombre: 'Asistencias', categorias: names, valores: masFaltas.map(e => e.asistencias) }
-        ], `${nombreInstitucion} — Top 10 Más Faltas`, colorPrimarioHex, colorSecundarioHex)
-      });
+      graficas.push({ nombre: 'Graf. Mas Faltas', chartXml: generarChartBarrasXml([
+        { nombre: 'Faltas',      categorias: names, valores: masFaltas.map(e => e.faltas) },
+        { nombre: 'Asistencias', categorias: names, valores: masFaltas.map(e => e.asistencias) }
+      ], `${nombreInstitucion} — Top 10 Más Faltas`, colorPrimarioHex, colorSecundarioHex) });
     }
     if (mejorRecord.length > 0) {
       const names = mejorRecord.map(e => `${e.nombre} ${e.apellido}`);
-      graficas.push({
-        nombre: 'Graf. Mejor Record',
-        chartXml: generarChartBarrasXml([
-          { nombre: 'Asistencias', categorias: names, valores: mejorRecord.map(e => e.asistencias) }
-        ], `${nombreInstitucion} — Top 10 Mejor Récord`, colorPrimarioHex, colorSecundarioHex)
-      });
+      graficas.push({ nombre: 'Graf. Mejor Record', chartXml: generarChartBarrasXml([
+        { nombre: 'Asistencias', categorias: names, valores: mejorRecord.map(e => e.asistencias) }
+      ], `${nombreInstitucion} — Top 10 Mejor Récord`, colorPrimarioHex, colorSecundarioHex) });
     }
 
     const finalBuffer = graficas.length > 0
@@ -1112,19 +1081,15 @@ const exportarEstadisticasExcel = async (req, res) => {
     const archivo_url = urlData.publicUrl;
 
     try {
-      const { error: insertError } = await supabase
-        .from('estadisticas_generadas')
-        .insert([{
-          fecha_inicio: inicio, fecha_fin: fin, archivo_url,
-          usuario: profesorEmail ? 'profesor' : 'admin',
-          creado_por: profesorEmail || 'admin',
-          fecha_generacion: new Date().toISOString(),
-          institucion_id
-        }]);
-      if (insertError) throw insertError;
-      console.log('✅ Estadística guardada en tabla estadisticas_generadas');
+      await supabase.from('estadisticas_generadas').insert([{
+        fecha_inicio: inicio, fecha_fin: fin, archivo_url,
+        usuario: profesorEmail ? 'profesor' : 'admin',
+        creado_por: profesorEmail || 'admin',
+        fecha_generacion: new Date().toISOString(),
+        institucion_id
+      }]);
     } catch (metaErr) {
-      console.error('❌ No se pudo guardar en estadisticas_generadas:', metaErr.message);
+      console.warn('⚠️ No se pudo guardar en estadisticas_generadas:', metaErr.message);
     }
 
     res.json({ success: true, url: archivo_url });
