@@ -217,17 +217,31 @@ const registrarPadre = async (req, res) => {
 const vincularEstudiante = async (req, res) => {
   try {
     const { cedula_hijo } = req.body;
-    const padreId = req.user.id;
+    const userId = req.user.id; // id de usuarios
 
     if (!cedula_hijo) {
       return res.status(400).json({ error: 'La cédula del estudiante es requerida' });
     }
 
+    // Buscar el id real en tabla padres usando user_id
+    const { data: padreRow, error: padreErr } = await supabase
+      .from('padres')
+      .select('id')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (padreErr || !padreRow) {
+      console.error('Perfil de padre no encontrado para user_id:', userId);
+      return res.status(404).json({ error: 'Perfil de padre no encontrado' });
+    }
+
+    const padreId = padreRow.id; // id real de tabla padres
+
     const { data: estudiante, error: errEst } = await supabase
       .from('estudiantes')
       .select('cedula, nombre, apellido, institucion_id')
       .eq('cedula', cedula_hijo)
-      .single();
+      .maybeSingle();
 
     if (errEst || !estudiante) {
       return res.status(404).json({ error: 'No se encontró un estudiante con esa cédula' });
@@ -254,7 +268,7 @@ const vincularEstudiante = async (req, res) => {
 
     if (vinculacionError) {
       console.error('Error vinculando estudiante:', vinculacionError.message);
-      return res.status(500).json({ error: 'Error al vincular estudiante' });
+      return res.status(500).json({ error: 'Error al vincular estudiante: ' + vinculacionError.message });
     }
 
     return res.json({
