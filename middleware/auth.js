@@ -2,6 +2,8 @@ const { supabase } = require('../config/supabase');
 
 // ============================================
 // VERIFICAR TOKEN
+// Busca el usuario en profesores primero,
+// luego en usuarios (padres), para soportar ambos roles.
 // ============================================
 const verificarToken = async (req, res, next) => {
   try {
@@ -15,24 +17,42 @@ const verificarToken = async (req, res, next) => {
       return res.status(401).json({ error: 'Token inválido o expirado' });
     }
 
-    const { data: usuarioDB, error: dbError } = await supabase
-      .from('usuarios')
+    // 1. Buscar en tabla profesores (admin y profesores)
+    const { data: profesorDB } = await supabase
+      .from('profesores')
       .select('id, rol, institucion_id')
-      .eq('email', user.email)
-      .single();
+      .eq('id', user.id)
+      .maybeSingle();
 
-    if (dbError || !usuarioDB) {
-      return res.status(401).json({ error: 'Usuario no registrado en el sistema' });
+    if (profesorDB) {
+      req.user = {
+        id: profesorDB.id,
+        email: user.email,
+        rol: profesorDB.rol,
+        institucion_id: profesorDB.institucion_id
+      };
+      return next();
     }
 
-    req.user = {
-      id: usuarioDB.id,
-      email: user.email,
-      rol: usuarioDB.rol,
-      institucion_id: usuarioDB.institucion_id
-    };
+    // 2. Buscar en tabla usuarios (padres y otros)
+    const { data: usuarioDB } = await supabase
+      .from('usuarios')
+      .select('id, rol, institucion_id')
+      .eq('id', user.id)
+      .maybeSingle();
 
-    next();
+    if (usuarioDB) {
+      req.user = {
+        id: usuarioDB.id,
+        email: user.email,
+        rol: usuarioDB.rol,
+        institucion_id: usuarioDB.institucion_id
+      };
+      return next();
+    }
+
+    return res.status(401).json({ error: 'Usuario no registrado en el sistema' });
+
   } catch (error) {
     console.error('Error en verificarToken:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
@@ -40,7 +60,7 @@ const verificarToken = async (req, res, next) => {
 };
 
 // ============================================
-// VERIFICAR ADMIN (incluye token)
+// VERIFICAR ADMIN (incluye verificarToken)
 // ============================================
 const verificarAdmin = async (req, res, next) => {
   await verificarToken(req, res, () => {
@@ -52,7 +72,8 @@ const verificarAdmin = async (req, res, next) => {
 };
 
 // ============================================
-// VERIFICAR PROFESOR (incluye token)
+// VERIFICAR PROFESOR (incluye verificarToken)
+// Permite admin y profesor
 // ============================================
 const verificarProfesor = async (req, res, next) => {
   await verificarToken(req, res, () => {
@@ -64,7 +85,7 @@ const verificarProfesor = async (req, res, next) => {
 };
 
 // ============================================
-// VERIFICAR PADRE
+// VERIFICAR PADRE (solo verifica rol, token va aparte)
 // ============================================
 const verificarPadre = (req, res, next) => {
   if (req.user?.rol !== 'padre') {
