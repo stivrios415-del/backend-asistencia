@@ -10,30 +10,28 @@ const {
   marcarAlertaLeida,
   generarReporteEstudiante
 } = require('../controllers/padreController');
+const {
+  actualizarPushToken,
+  getMisNotificaciones,
+  marcarNotificacionLeida
+} = require('../services/notificacionService');
 
-// Todas las rutas requieren: 1) token válido, 2) rol padre
+// Todas las rutas requieren token + rol padre
 router.use(verificarToken);
 router.use(verificarPadre);
 
-// Obtener hijos del padre
-router.get('/hijos', getHijos);
+// Panel
+router.get('/hijos',                        getHijos);
+router.get('/asistencia/:estudianteId',     getAsistenciaEstudiante);
+router.get('/estadisticas/:estudianteId',   getEstadisticasEstudiante);
+router.get('/horarios/:estudianteId',       getHorariosEstudiante);
+router.get('/alertas/:estudianteId',        getAlertasEstudiante);
+router.put('/alertas/:alertaId/leer',       marcarAlertaLeida);
+router.get('/reporte/:estudianteId',        generarReporteEstudiante);
 
-// Asistencia de un estudiante específico
-router.get('/asistencia/:estudianteId', getAsistenciaEstudiante);
-
-// Estadísticas de un estudiante
-router.get('/estadisticas/:estudianteId', getEstadisticasEstudiante);
-
-// Horarios de un estudiante
-router.get('/horarios/:estudianteId', getHorariosEstudiante);
-
-// Alertas de un estudiante
-router.get('/alertas/:estudianteId', getAlertasEstudiante);
-
-// Marcar alerta como leída
-router.put('/alertas/:alertaId/leer', marcarAlertaLeida);
-
-// Generar reporte de un estudiante
-router.get('/reporte/:estudianteId', generarReporteEstudiante);
+// Notificaciones push
+router.post('/push-token',                  actualizarPushToken);
+router.get('/notificaciones',               getMisNotificaciones);
+router.put('/notificaciones/:id/leer',      marcarNotificacionLeida);
 
 module.exports = router;
