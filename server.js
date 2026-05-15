@@ -44,6 +44,7 @@ const materiasRoutes      = require('./routes/materias');
 const institucionesRoutes = require('./routes/instituciones');
 const authPadreRoutes     = require('./routes/authPadre');
 const padresRoutes        = require('./routes/padres');
+const excusasRoutes = require('./src/routes/excusas');
 
 // ============================================
 // RUTAS
@@ -55,6 +56,7 @@ app.use('/api/materias',     materiasRoutes);
 app.use('/api/instituciones',institucionesRoutes);
 app.use('/api/auth-padre',   authPadreRoutes);
 app.use('/api/padres',       padresRoutes);
+app.use('/api/excusas', excusasRoutes);
 
 // ============================================
 // MANEJO DE ERRORES
@@ -66,7 +68,7 @@ app.use((err, req, res, next) => {
 });
 
 // Ruta no encontrada
-app.use((req, res) => {
+app.use('*', (req, res) => {
   res.status(404).json({ error: `Ruta no encontrada: ${req.originalUrl}` });
 });
 
