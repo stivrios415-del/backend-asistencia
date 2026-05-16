@@ -1,4 +1,4 @@
-const { supabase } = require('../config/supabase');
+const { supabase, supabaseAdmin } = require('../config/supabase');
 
 // ============================================
 // SUBIR EXCUSA MÉDICA
@@ -38,12 +38,12 @@ const subirExcusa = async (req, res) => {
       return res.status(400).json({ error: 'Ya existe una excusa para esta fecha y estudiante' });
     }
 
-    // Subir imagen a Supabase Storage
+    // Subir imagen a Supabase Storage usando supabaseAdmin (bypass RLS del bucket)
     const ext = extension || 'jpg';
     const fileName = `excusas/${padreRow.id}/${estudiante_cedula}_${fecha_ausencia}_${Date.now()}.${ext}`;
     const buffer = Buffer.from(foto_base64, 'base64');
 
-    const { error: uploadError } = await supabase.storage
+    const { error: uploadError } = await supabaseAdmin.storage
       .from('excusas')
       .upload(fileName, buffer, {
         contentType: `image/${ext}`,
@@ -55,11 +55,12 @@ const subirExcusa = async (req, res) => {
       return res.status(500).json({ error: 'Error al subir la imagen: ' + uploadError.message });
     }
 
-    const { data: urlData } = supabase.storage.from('excusas').getPublicUrl(fileName);
+    // Obtener URL pública (el bucket debe ser público o generar URL firmada)
+    const { data: urlData } = supabaseAdmin.storage.from('excusas').getPublicUrl(fileName);
     const foto_url = urlData.publicUrl;
 
-    // Guardar en tabla
-    const { data: excusa, error: dbError } = await supabase
+    // Insertar usando supabaseAdmin (bypass RLS de la tabla)
+    const { data: excusa, error: dbError } = await supabaseAdmin
       .from('excusas_medicas')
       .insert({
         padre_id: padreRow.id,
@@ -121,7 +122,6 @@ const getMisExcusas = async (req, res) => {
 // ============================================
 const getExcusasAdmin = async (req, res) => {
   try {
-    const institucion_id = req.user.institucion_id;
     const { estado, estudiante_cedula } = req.query;
 
     let query = supabase
@@ -160,7 +160,7 @@ const actualizarEstadoExcusa = async (req, res) => {
       return res.status(400).json({ error: 'Estado inválido' });
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await supabaseAdmin
       .from('excusas_medicas')
       .update({ estado, observacion_admin: observacion_admin || null })
       .eq('id', id)
