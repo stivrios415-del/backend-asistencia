@@ -37,20 +37,20 @@ app.get('/api/health', (req, res) => {
 // ============================================
 // RUTAS
 // ============================================
-app.use('/api/estudiantes',   require('./src/routes/estudiantes'));
-app.use('/api/asistencia',    require('./src/routes/asistencia'));
-app.use('/api/admin',         require('./src/routes/admin'));
-app.use('/api/materias',      require('./src/routes/materias'));
-app.use('/api/instituciones', require('./src/routes/instituciones'));
-app.use('/api/auth-padre',    require('./src/routes/authPadre'));
-app.use('/api/padres',        require('./src/routes/padres'));
-app.use('/api/excusas',       require('./src/routes/excusas'));
+app.use('/api/estudiantes',   require('./routes/estudiantes'));
+app.use('/api/asistencia',    require('./routes/asistencia'));
+app.use('/api/admin',         require('./routes/admin'));
+app.use('/api/materias',      require('./routes/materias'));
+app.use('/api/instituciones', require('./routes/instituciones'));
+app.use('/api/auth-padre',    require('./routes/authPadre'));
+app.use('/api/padres',        require('./routes/padres'));
+app.use('/api/excusas',       require('./routes/excusas'));
 
 // ============================================
 // JOB DIARIO DE FALTAS
 // ============================================
 try {
-  const { iniciarJobFaltas } = require('./src/jobs/notificarFaltasDiarias');
+  const { iniciarJobFaltas } = require('./jobs/notificarFaltasDiarias');
   iniciarJobFaltas();
 } catch (e) {
   console.warn('⚠️ Job de faltas no iniciado:', e.message);
@@ -65,7 +65,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Error interno del servidor' });
 });
 
-// 404 — sin wildcard '*' (incompatible con Express 5)
+// 404 sin wildcard (Express 5 no lo soporta)
 app.use((req, res) => {
   res.status(404).json({ error: `Ruta no encontrada: ${req.originalUrl}` });
 });
@@ -76,8 +76,6 @@ app.use((req, res) => {
 app.listen(PORT, () => {
   console.log(`\n🚀 Servidor corriendo en puerto ${PORT}`);
   console.log(`📱 API disponible en: http://localhost:${PORT}/api`);
-  console.log(`\n📋 Rutas registradas:`);
-  console.log(`   /api/estudiantes  /api/asistencia  /api/admin`);
-  console.log(`   /api/materias     /api/instituciones`);
-  console.log(`   /api/auth-padre   /api/padres       /api/excusas\n`);
+  console.log(`\n📋 Rutas: estudiantes | asistencia | admin | materias`);
+  console.log(`         instituciones | auth-padre | padres | excusas\n`);
 });
