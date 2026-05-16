@@ -44,7 +44,7 @@ const materiasRoutes      = require('./routes/materias');
 const institucionesRoutes = require('./routes/instituciones');
 const authPadreRoutes     = require('./routes/authPadre');
 const padresRoutes        = require('./routes/padres');
-const excusasRoutes = require('./src/routes/excusas');
+const excusasRoutes        = require('./routes/excusas');
 
 // ============================================
 // RUTAS
