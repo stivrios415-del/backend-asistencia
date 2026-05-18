@@ -1,6 +1,13 @@
 const { supabase } = require('../config/supabase');
+const ExcelJS = require('exceljs');
+const JSZip = require('jszip');
+const { notificarTardanza } = require('../services/notificacionService');
+
+const HORA_LIMITE_TARDANZA = '07:30'; // Cambia según horario del colegio
+
 
 // ============================================
+
 // SUBIR EXCUSA MÉDICA
 // ============================================
 const subirExcusa = async (req, res) => {
