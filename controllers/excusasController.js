@@ -1,4 +1,4 @@
-const { supabase, supabaseAdmin } = require('../config/supabase');
+const { supabase } = require('../config/supabase');
 
 // ============================================
 // SUBIR EXCUSA MÉDICA
@@ -12,12 +12,10 @@ const subirExcusa = async (req, res) => {
       return res.status(400).json({ error: 'Cédula, fecha y foto son requeridos' });
     }
 
-    // Obtener padre_id
     const { data: padreRow } = await supabase
       .from('padres').select('id').eq('user_id', userId).maybeSingle();
     if (!padreRow) return res.status(404).json({ error: 'Perfil de padre no encontrado' });
 
-    // Verificar que el estudiante está vinculado al padre
     const { data: vinculacion } = await supabase
       .from('padre_estudiante')
       .select('padre_id')
@@ -26,7 +24,6 @@ const subirExcusa = async (req, res) => {
       .maybeSingle();
     if (!vinculacion) return res.status(403).json({ error: 'Este estudiante no está vinculado a tu cuenta' });
 
-    // Verificar que no haya excusa duplicada para esa fecha
     const { data: excusaExistente } = await supabase
       .from('excusas_medicas')
       .select('id')
@@ -38,36 +35,29 @@ const subirExcusa = async (req, res) => {
       return res.status(400).json({ error: 'Ya existe una excusa para esta fecha y estudiante' });
     }
 
-    // Subir imagen a Supabase Storage usando supabaseAdmin (bypass RLS del bucket)
     const ext = extension || 'jpg';
     const fileName = `excusas/${padreRow.id}/${estudiante_cedula}_${fecha_ausencia}_${Date.now()}.${ext}`;
     const buffer = Buffer.from(foto_base64, 'base64');
 
-    const { error: uploadError } = await supabaseAdmin.storage
+    const { error: uploadError } = await supabase.storage
       .from('excusas')
-      .upload(fileName, buffer, {
-        contentType: `image/${ext}`,
-        upsert: false
-      });
+      .upload(fileName, buffer, { contentType: `image/${ext}`, upsert: false });
 
     if (uploadError) {
       console.error('Error subiendo imagen:', uploadError.message);
       return res.status(500).json({ error: 'Error al subir la imagen: ' + uploadError.message });
     }
 
-    // Obtener URL pública (el bucket debe ser público o generar URL firmada)
-    const { data: urlData } = supabaseAdmin.storage.from('excusas').getPublicUrl(fileName);
-    const foto_url = urlData.publicUrl;
+    const { data: urlData } = supabase.storage.from('excusas').getPublicUrl(fileName);
 
-    // Insertar usando supabaseAdmin (bypass RLS de la tabla)
-    const { data: excusa, error: dbError } = await supabaseAdmin
+    const { data: excusa, error: dbError } = await supabase
       .from('excusas_medicas')
       .insert({
         padre_id: padreRow.id,
         estudiante_cedula,
         fecha_ausencia,
         descripcion: descripcion || null,
-        foto_url,
+        foto_url: urlData.publicUrl,
         estado: 'pendiente'
       })
       .select()
@@ -88,7 +78,7 @@ const subirExcusa = async (req, res) => {
 };
 
 // ============================================
-// OBTENER MIS EXCUSAS
+// OBTENER MIS EXCUSAS (PADRE)
 // ============================================
 const getMisExcusas = async (req, res) => {
   try {
@@ -149,27 +139,127 @@ const getExcusasAdmin = async (req, res) => {
 };
 
 // ============================================
-// ACTUALIZAR ESTADO EXCUSA (ADMIN)
+// ACTUALIZAR ESTADO EXCUSA (ADMIN/PROFESOR)
+// Al APROBAR → registrar asistencia como excusado
+// en todas las materias del profesor para esa fecha
 // ============================================
 const actualizarEstadoExcusa = async (req, res) => {
   try {
     const { id } = req.params;
     const { estado, observacion_admin } = req.body;
+    const userId       = req.user.id;
+    const institucion_id = req.user.institucion_id;
 
     if (!['aprobada', 'rechazada', 'pendiente'].includes(estado)) {
       return res.status(400).json({ error: 'Estado inválido' });
     }
 
-    const { data, error } = await supabaseAdmin
+    // 1. Obtener datos de la excusa
+    const { data: excusa, error: errExcusa } = await supabase
+      .from('excusas_medicas')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (errExcusa || !excusa) {
+      return res.status(404).json({ error: 'Excusa no encontrada' });
+    }
+
+    // 2. Actualizar estado en la tabla
+    const { data: excusaActualizada, error: errUpdate } = await supabase
       .from('excusas_medicas')
       .update({ estado, observacion_admin: observacion_admin || null })
       .eq('id', id)
       .select()
       .single();
 
-    if (error) throw error;
+    if (errUpdate) throw errUpdate;
 
-    return res.json({ success: true, excusa: data });
+    // 3. Si se APRUEBA → registrar como excusado en la asistencia
+    if (estado === 'aprobada') {
+      console.log(`✅ Excusa aprobada — registrando como excusado: ${excusa.estudiante_cedula} en ${excusa.fecha_ausencia}`);
+
+      // Obtener todas las materias del profesor que aprueba
+      const { data: materiasProfesor } = await supabase
+        .from('materias')
+        .select('id, grado, carrera, nombre')
+        .eq('profesor_id', userId);
+
+      // Si no tiene materias asignadas, buscar por institución
+      let materiasParaExcusar = materiasProfesor || [];
+
+      // También buscar el grado/carrera del estudiante
+      const { data: estudiante } = await supabase
+        .from('estudiantes')
+        .select('grado, carrera, seccion')
+        .eq('cedula', excusa.estudiante_cedula)
+        .maybeSingle();
+
+      if (estudiante && materiasParaExcusar.length > 0) {
+        // Filtrar solo las materias que corresponden al grado/carrera del estudiante
+        materiasParaExcusar = materiasParaExcusar.filter(m =>
+          String(m.grado).toLowerCase() === String(estudiante.grado).toLowerCase() &&
+          m.carrera?.toLowerCase() === estudiante.carrera?.toLowerCase()
+        );
+      }
+
+      let excusadosInsertados = 0;
+
+      for (const materia of materiasParaExcusar) {
+        // Verificar si ya tiene registro de asistencia ese día en esa materia
+        const { data: asistenciaExistente } = await supabase
+          .from('asistencia')
+          .select('id, estado')
+          .eq('cedula', excusa.estudiante_cedula)
+          .eq('fecha', excusa.fecha_ausencia)
+          .eq('materia_id', materia.id)
+          .maybeSingle();
+
+        if (asistenciaExistente) {
+          // Actualizar estado a excusado si ya existe
+          await supabase
+            .from('asistencia')
+            .update({ estado: 'excusado' })
+            .eq('id', asistenciaExistente.id);
+          console.log(`🔄 Actualizado a excusado: ${materia.nombre}`);
+        } else {
+          // Insertar nuevo registro como excusado
+          const { error: errInsert } = await supabase
+            .from('asistencia')
+            .insert({
+              cedula: excusa.estudiante_cedula,
+              fecha: excusa.fecha_ausencia,
+              hora: '00:00:00',
+              materia_id: materia.id,
+              institucion_id: institucion_id,
+              estado: 'excusado'
+            });
+
+          if (!errInsert) {
+            excusadosInsertados++;
+            console.log(`✅ Excusado insertado en: ${materia.nombre}`);
+          } else {
+            console.warn(`⚠️ Error insertando excusado en ${materia.nombre}:`, errInsert.message);
+          }
+        }
+      }
+
+      console.log(`✅ Total clases excusadas: ${excusadosInsertados}`);
+    }
+
+    // 4. Si se RECHAZA → eliminar registros excusados si los hubiera
+    if (estado === 'rechazada') {
+      await supabase
+        .from('asistencia')
+        .delete()
+        .eq('cedula', excusa.estudiante_cedula)
+        .eq('fecha', excusa.fecha_ausencia)
+        .eq('estado', 'excusado');
+      console.log(`❌ Excusados eliminados para: ${excusa.estudiante_cedula} en ${excusa.fecha_ausencia}`);
+    }
+
+    return res.json({ success: true, excusa: excusaActualizada });
+
   } catch (error) {
     console.error('Error en actualizarEstadoExcusa:', error.message);
     return res.status(500).json({ error: 'Error interno del servidor' });
