@@ -1,13 +1,6 @@
-const { supabase } = require('../config/supabase');
-const ExcelJS = require('exceljs');
-const JSZip = require('jszip');
-const { notificarTardanza } = require('../services/notificacionService');
-
-const HORA_LIMITE_TARDANZA = '07:30'; // Cambia según horario del colegio
-
+const { supabase, supabaseAdmin } = require('../config/supabase');
 
 // ============================================
-
 // SUBIR EXCUSA MÉDICA
 // ============================================
 const subirExcusa = async (req, res) => {
@@ -46,7 +39,9 @@ const subirExcusa = async (req, res) => {
     const fileName = `excusas/${padreRow.id}/${estudiante_cedula}_${fecha_ausencia}_${Date.now()}.${ext}`;
     const buffer = Buffer.from(foto_base64, 'base64');
 
-    const { error: uploadError } = await supabase.storage
+    // Usar supabaseAdmin para storage (bypasea RLS)
+    const storageClient = supabaseAdmin || supabase;
+    const { error: uploadError } = await storageClient.storage
       .from('excusas')
       .upload(fileName, buffer, { contentType: `image/${ext}`, upsert: false });
 
@@ -55,7 +50,7 @@ const subirExcusa = async (req, res) => {
       return res.status(500).json({ error: 'Error al subir la imagen: ' + uploadError.message });
     }
 
-    const { data: urlData } = supabase.storage.from('excusas').getPublicUrl(fileName);
+    const { data: urlData } = storageClient.storage.from('excusas').getPublicUrl(fileName);
 
     const { data: excusa, error: dbError } = await supabase
       .from('excusas_medicas')
