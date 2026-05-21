@@ -293,7 +293,12 @@ const getReporteAsistencia = async (req, res) => {
   if (institucion_id) query = query.eq('institucion_id', institucion_id);
   const { data, error } = await query.order('fecha', { ascending: false });
   if (error) return res.status(400).json({ error: error.message });
-  res.json(data.map(item => ({ ...item, materia_nombre: item.materias?.nombre || 'Sin materia' })));
+  // Incluir estado en la respuesta para mostrar excusados en la lista
+  res.json(data.map(item => ({
+    ...item,
+    materia_nombre: item.materias?.nombre || 'Sin materia',
+    estado: item.estado || 'presente'
+  })));
 };
 
 // ========== EXPORTAR EXCEL SIMPLE ==========
@@ -379,6 +384,7 @@ const exportarReporteCompletoExcel = async (req, res) => {
     if (filtrarPorProfesor) {
       const idsMaterias = await obtenerIdsMateriaProfesor(profesorEmail, institucion_id);
       if (!idsMaterias || idsMaterias.length === 0) { const url = await subirExcelVacio('No hay asistencias para este profesor en esta fecha.'); return res.json({ success: true, url }); }
+      // Incluye registros de las materias del profesor (presentes Y excusados)
       queryAsistencias = queryAsistencias.in('materia_id', idsMaterias);
     }
     if (grado) queryAsistencias = queryAsistencias.filter('materias.grado', 'eq', grado);
