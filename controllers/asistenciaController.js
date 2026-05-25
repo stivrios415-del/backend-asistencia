@@ -1,7 +1,7 @@
 const { supabase } = require('../config/supabase');
 const ExcelJS = require('exceljs');
 const JSZip = require('jszip');
-const { notificarTardanza } = require('../services/notificacionService');
+const { notificarTardanza, notificarAsistencia } = require('../services/notificacionService');
 
 const HORA_LIMITE_TARDANZA = '07:30';
 
@@ -186,7 +186,7 @@ const registrarAsistencia = async (req, res) => {
   const institucion_id = req.user.institucion_id;
   if (!cedula) return res.status(400).json({ error: 'Cédula no proporcionada' });
   if (!materiaId) return res.status(400).json({ error: 'Debe especificar la materia/clase' });
-  const { data: materia, error: errMateria } = await supabase.from('materias').select('grado, carrera').eq('id', materiaId).single();
+  const { data: materia, error: errMateria } = await supabase.from('materias').select('grado, carrera, nombre, profesor_id, profesores:profesor_id(nombre)').eq('id', materiaId).single();
   if (errMateria || !materia) return res.status(404).json({ error: 'La clase seleccionada no existe' });
   const { data: estudiante, error: errEstudiante } = await supabase.from('estudiantes')
     .select('cedula, nombre, apellido, grado, seccion, carrera, foto_url').eq('cedula', cedula).single();
