@@ -42,8 +42,8 @@ const enviarPush = async (expoPushToken, titulo, mensaje, data = {}) => {
 const enviarEmail = async (emailDestino, nombrePadre, nombreEstudiante, tipo, mensajeHtml) => {
   if (!process.env.RESEND_API_KEY || !emailDestino) return false;
   try {
-    const emojis  = { falta: '⚠️', tardanza: '🕐', muchas_ausencias: '🔴' };
-    const colores = { falta: '#F59E0B', tardanza: '#3B82F6', muchas_ausencias: '#EF4444' };
+    const emojis  = { falta: '⚠️', tardanza: '🕐', muchas_ausencias: '🔴', asistencia: '✅' };
+    const colores = { falta: '#F59E0B', tardanza: '#3B82F6', muchas_ausencias: '#EF4444', asistencia: '#10B981' };
     const emoji   = emojis[tipo]  || '📢';
     const color   = colores[tipo] || '#143C65';
 
@@ -290,7 +290,33 @@ const marcarNotificacionLeida = async (req, res) => {
   }
 };
 
+
+// ============================================
+// NOTIFICAR ASISTENCIA REGISTRADA
+// Se llama cada vez que el profesor pasa lista
+// ============================================
+const notificarAsistencia = async (cedula, fecha, hora, nombreProfesor, nombreMateria) => {
+  try {
+    const { data: est } = await supabase
+      .from('estudiantes').select('nombre, apellido, grado, seccion')
+      .eq('cedula', cedula).maybeSingle();
+    if (!est) return;
+
+    const nombreEst = `${est.nombre} ${est.apellido}`;
+    const grado     = `${est.grado}° ${est.seccion}`;
+    const titulo    = '✅ Asistencia registrada';
+    const push      = `${nombreEst} asistió a ${nombreMateria || 'clase'} con ${nombreProfesor || 'el profesor'}. Hora: ${hora}.`;
+    const email     = `Su hijo/a <strong>${nombreEst}</strong> (${grado}) <strong>registró asistencia</strong> el día <strong>${fecha}</strong> a las <strong>${hora}</strong> en la clase de <strong>${nombreMateria || 'clase'}</strong> con el profesor/a <strong>${nombreProfesor || '—'}</strong>.`;
+
+    await notificarPadresDeEstudiante(cedula, 'asistencia', titulo, push, email, {
+      nombreEstudiante: nombreEst, fecha, hora, nombreProfesor, nombreMateria
+    });
+  } catch (error) {
+    console.error('❌ notificarAsistencia:', error.message);
+  }
+};
+
 module.exports = {
-  notificarFalta, notificarTardanza,
+  notificarFalta, notificarTardanza, notificarAsistencia,
   actualizarPushToken, getMisNotificaciones, marcarNotificacionLeida
 };
