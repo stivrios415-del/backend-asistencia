@@ -1,7 +1,7 @@
 const { supabase } = require('../config/supabase');
 const ExcelJS = require('exceljs');
 const JSZip = require('jszip');
-const { notificarTardanza, notificarAsistencia, notificarPadresDeEstudiante } = require('../services/notificacionService');
+const { notificarTardanza, notificarAsistencia, notificarFaltaClase } = require('../services/notificacionService');
 
 const HORA_LIMITE_TARDANZA = '07:30';
 
@@ -642,80 +642,10 @@ const exportarEstadisticasExcel = async (req, res) => {
   } catch (error) { console.error('❌ Error exportando estadísticas:', error); res.status(500).json({ error: error.message }); }
 };
 
-
-// ========== FINALIZAR CLASE ==========
-// Notifica presentes y ausentes, luego limpia la lista
-const finalizarClase = async (req, res) => {
-  const { materiaId, profesorEmail } = req.body;
-  const institucion_id = req.user.institucion_id;
-  if (!materiaId) return res.status(400).json({ error: 'Falta materiaId' });
-
-  try {
-    const hoy = new Date().toISOString().split('T')[0];
-
-    // Obtener datos de la materia y profesor
-    const { data: materia } = await supabase.from('materias')
-      .select('id, nombre, grado, carrera, seccion, profesores:profesor_id(nombre)')
-      .eq('id', materiaId).single();
-    if (!materia) return res.status(404).json({ error: 'Clase no encontrada' });
-
-    const nombreProfesor = materia.profesores?.nombre || profesorEmail || 'el profesor';
-    const nombreMateria  = materia.nombre || materia.carrera || 'Clase';
-
-    // Obtener quiénes asistieron hoy en esta materia
-    const { data: asistencias } = await supabase.from('asistencia')
-      .select('cedula, estado')
-      .eq('fecha', hoy)
-      .eq('materia_id', materiaId);
-
-    const asistieronCedulas = new Set((asistencias || []).map(a => a.cedula));
-
-    // Obtener todos los estudiantes del grado/carrera de esta clase
-    let qEst = supabase.from('estudiantes')
-      .select('cedula, nombre, apellido')
-      .eq('grado', materia.grado)
-      .eq('carrera', materia.carrera);
-    if (institucion_id) qEst = qEst.eq('institucion_id', institucion_id);
-    const { data: todosEstudiantes } = await qEst;
-
-    // Notificar en background — no bloquear la respuesta
-    res.json({ success: true, mensaje: 'Clase finalizada. Enviando notificaciones...' });
-
-    // Notificar a los que NO asistieron
-    const ausentes = (todosEstudiantes || []).filter(e => !asistieronCedulas.has(e.cedula));
-    for (const est of ausentes) {
-      try {
-        const push  = `⚠️ ${est.nombre} ${est.apellido} no asistió a la clase de ${nombreMateria} con ${nombreProfesor}.`;
-        const email = `Su hijo/a <strong>${est.nombre} ${est.apellido}</strong> <strong>no asistió</strong> a la clase de <strong>${nombreMateria}</strong> impartida por el profesor/a <strong>${nombreProfesor}</strong> el día <strong>${hoy}</strong>.`;
-        await notificarPadresDeEstudiante(
-          est.cedula, 'falta', '⚠️ Falta en clase',
-          push, email,
-          { nombreEstudiante: `${est.nombre} ${est.apellido}`, fecha: hoy, nombreProfesor, nombreMateria }
-        );
-      } catch(e) { console.error('Error notif ausente:', e.message); }
-    }
-
-    // Limpiar lista de presentes de esta clase (conservar excusados)
-    await supabase.from('asistencia')
-      .delete()
-      .eq('fecha', hoy)
-      .eq('materia_id', materiaId)
-      .neq('estado', 'excusado');
-
-    console.log(`✅ Clase finalizada: ${nombreMateria} | Presentes: ${asistieronCedulas.size} | Ausentes notificados: ${ausentes.length}`);
-
-  } catch(error) {
-    console.error('❌ Error finalizarClase:', error.message);
-    if (!res.headersSent) res.status(500).json({ error: error.message });
-  }
-};
-
-
 // ========== FINALIZAR CLASE ==========
 const finalizarClase = async (req, res) => {
   const { materiaId, nombreProfesor, nombreMateria } = req.body;
   const institucion_id = req.user.institucion_id;
-
   if (!materiaId) return res.status(400).json({ error: 'Falta materiaId' });
 
   try {
@@ -726,11 +656,11 @@ const finalizarClase = async (req, res) => {
       .from('materias').select('grado, carrera, nombre').eq('id', materiaId).single();
     if (errMat || !materia) return res.status(404).json({ error: 'Materia no encontrada' });
 
-    // 2. Todos los estudiantes del grado/carrera de la materia
+    // 2. Todos los estudiantes del grado/carrera
     let qEst = supabase.from('estudiantes')
       .select('cedula, nombre, apellido')
-      .eq('grado', materia.grado);
-    if (materia.carrera) qEst = qEst.ilike('carrera', materia.carrera);
+      .eq('grado', materia.grado)
+      .ilike('carrera', materia.carrera || '');
     if (institucion_id) qEst = qEst.eq('institucion_id', institucion_id);
     const { data: todosEstudiantes } = await qEst;
 
@@ -738,7 +668,7 @@ const finalizarClase = async (req, res) => {
       return res.json({ success: true, presentes: 0, ausentes: 0 });
     }
 
-    // 3. Los que SÍ asistieron hoy a esta materia
+    // 3. Los que SÍ asistieron hoy
     const { data: asistidos } = await supabase
       .from('asistencia').select('cedula')
       .eq('fecha', hoy).eq('materia_id', materiaId);
@@ -750,9 +680,9 @@ const finalizarClase = async (req, res) => {
     // 4. Responder inmediatamente
     res.json({ success: true, presentes: totalPresentes, ausentes: totalAusentes });
 
-    // 5. Notificar en background sin bloquear
+    // 5. Notificar en background
     const nombreClase = nombreMateria || materia.nombre || materia.carrera;
-    const horaActual  = new Date().toLocaleTimeString('en-GB', { hour12: false, timeZone: 'America/Tegucigalda' });
+    const horaActual  = new Date().toLocaleTimeString('en-GB', { hour12: false });
 
     for (const est of todosEstudiantes) {
       try {
@@ -774,4 +704,10 @@ const finalizarClase = async (req, res) => {
   }
 };
 
-module.exports = { registrarAsistencia, finalizarClase, finalizarClase, getAsistenciaHoy, getAsistenciaByFecha, getAsistenciaPorGrado, limpiarAsistenciaHoy, getReporteAsistencia, exportarReporteExcel, exportarReporteCompletoExcel, getReportesGenerados, getEstadisticas, exportarEstadisticasExcel };
+module.exports = {
+  registrarAsistencia, finalizarClase,
+  getAsistenciaHoy, getAsistenciaByFecha, getAsistenciaPorGrado,
+  limpiarAsistenciaHoy, getReporteAsistencia,
+  exportarReporteExcel, exportarReporteCompletoExcel, getReportesGenerados,
+  getEstadisticas, exportarEstadisticasExcel
+};
