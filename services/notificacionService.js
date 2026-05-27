@@ -316,7 +316,33 @@ const notificarAsistencia = async (cedula, fecha, hora, nombreProfesor, nombreMa
   }
 };
 
+
+// ============================================
+// NOTIFICAR FALTA EN CLASE ESPECÍFICA
+// Se llama al finalizar clase para ausentes
+// ============================================
+const notificarFaltaClase = async (cedula, fecha, nombreProfesor, nombreMateria, institucion_id) => {
+  try {
+    const { data: est } = await supabase
+      .from('estudiantes').select('nombre, apellido, grado, seccion')
+      .eq('cedula', cedula).maybeSingle();
+    if (!est) return;
+
+    const nombreEst = `${est.nombre} ${est.apellido}`;
+    const grado     = `${est.grado}° ${est.seccion}`;
+    const titulo    = '❌ Ausencia en clase';
+    const push      = `${nombreEst} no asistió a ${nombreMateria} con ${nombreProfesor}.`;
+    const email     = `Su hijo/a <strong>${nombreEst}</strong> (${grado}) <strong>no asistió</strong> a la clase de <strong>${nombreMateria}</strong> con el profesor/a <strong>${nombreProfesor}</strong> el día <strong>${fecha}</strong>.`;
+
+    await notificarPadresDeEstudiante(cedula, 'falta', titulo, push, email, {
+      nombreEstudiante: nombreEst, fecha, nombreProfesor, nombreMateria
+    });
+  } catch (error) {
+    console.error('❌ notificarFaltaClase:', error.message);
+  }
+};
+
 module.exports = {
-  notificarFalta, notificarTardanza, notificarAsistencia,
+  notificarFalta, notificarTardanza, notificarAsistencia, notificarFaltaClase,
   actualizarPushToken, getMisNotificaciones, marcarNotificacionLeida
 };
