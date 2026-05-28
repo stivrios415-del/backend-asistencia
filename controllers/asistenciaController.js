@@ -657,12 +657,21 @@ const finalizarClase = async (req, res) => {
     if (errMat || !materia) return res.status(404).json({ error: 'Materia no encontrada' });
 
     // 2. Todos los estudiantes del grado/carrera
+    // Normalizar carrera: quitar tildes y comparar en minúsculas
+    const normalizarTextoLocal = (str) => (str || '').toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+
+    // Obtener todos los estudiantes del grado y filtrar por carrera normalizando tildes
     let qEst = supabase.from('estudiantes')
-      .select('cedula, nombre, apellido')
-      .eq('grado', materia.grado)
-      .ilike('carrera', materia.carrera || '');
+      .select('cedula, nombre, apellido, carrera')
+      .eq('grado', materia.grado);
     if (institucion_id) qEst = qEst.eq('institucion_id', institucion_id);
-    const { data: todosEstudiantes } = await qEst;
+    const { data: todosEstudiantesRaw } = await qEst;
+
+    const carreraNorm = normalizarTextoLocal(materia.carrera);
+    const todosEstudiantes = (todosEstudiantesRaw || []).filter(e =>
+      normalizarTextoLocal(e.carrera) === carreraNorm
+    );
 
     if (!todosEstudiantes || todosEstudiantes.length === 0) {
       return res.json({ success: true, presentes: 0, ausentes: 0 });
