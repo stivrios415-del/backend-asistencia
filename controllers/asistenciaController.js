@@ -392,12 +392,37 @@ const exportarReporteCompletoExcel = async (req, res) => {
     const { data: asistencias, error: errAsistencias } = await queryAsistencias;
     if (errAsistencias) throw errAsistencias;
 
+    // ── Agrupar presentes y excusados por materia ──
     const grupos = new Map();
     asistencias.forEach(asis => {
       const materia = asis.materias; if (!materia) return;
       if (!grupos.has(materia.id)) grupos.set(materia.id, { materia, asistencias: [] });
       grupos.get(materia.id).asistencias.push({ estudiante: asis.estudiantes, hora: asis.hora, estado: asis.estado || 'presente' });
     });
+
+    // ── Agregar ausentes a cada grupo ──
+    const norm = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+    for (const [materiaId, grupo] of grupos) {
+      const mat = grupo.materia;
+      // Obtener todos los estudiantes del grado/carrera de esta materia
+      let qEst = supabase.from('estudiantes')
+        .select('cedula, nombre, apellido, grado, seccion, carrera')
+        .eq('grado', mat.grado);
+      if (institucion_id) qEst = qEst.eq('institucion_id', institucion_id);
+      const { data: todosEst } = await qEst;
+      const cedulasPresentes = new Set(grupo.asistencias.map(a => a.estudiante?.cedula));
+      const ausentes = (todosEst || []).filter(e =>
+        norm(e.carrera) === norm(mat.carrera) && !cedulasPresentes.has(e.cedula)
+      );
+      ausentes.forEach(est => {
+        grupo.asistencias.push({ estudiante: est, hora: null, estado: 'ausente' });
+      });
+      // Ordenar: presentes primero, luego excusados, luego ausentes
+      grupo.asistencias.sort((a, b) => {
+        const orden = { presente: 0, excusado: 1, ausente: 2 };
+        return (orden[a.estado] || 0) - (orden[b.estado] || 0);
+      });
+    }
 
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet(`Asistencia_${fecha}`);
@@ -439,7 +464,7 @@ const exportarReporteCompletoExcel = async (req, res) => {
       worksheet.getCell(`A${currentRow}`).alignment = { horizontal: 'center' };
       worksheet.getRow(currentRow).height = 22; currentRow++;
 
-      const resumenHeaders = worksheet.addRow(['Clase', 'Grado', 'Sección', 'Profesor', 'Presentes', 'Excusados', 'Total']);
+      const resumenHeaders = worksheet.addRow(['Clase', 'Grado', 'Sección', 'Profesor', 'Presentes', 'Excusados', 'Ausentes', 'Total']);
       resumenHeaders.eachCell(cell => { cell.style = subHeaderStyle; }); currentRow++;
 
       const gruposOrdenadosResumen = Array.from(grupos.values()).sort((a, b) => {
@@ -449,21 +474,25 @@ const exportarReporteCompletoExcel = async (req, res) => {
 
       gruposOrdenadosResumen.forEach((grupo, idx) => {
         const mat = grupo.materia;
-        const presentes = grupo.asistencias.filter(a => a.estado !== 'excusado').length;
+        const presentes = grupo.asistencias.filter(a => a.estado === 'presente').length;
         const excusados = grupo.asistencias.filter(a => a.estado === 'excusado').length;
-        const row = worksheet.addRow([mat.nombre || mat.carrera || 'Clase', `${mat.grado}°`, mat.seccion, mat.profesores?.nombre || 'Sin profesor', presentes, excusados, presentes + excusados]);
+        const ausentes  = grupo.asistencias.filter(a => a.estado === 'ausente').length;
+        const row = worksheet.addRow([mat.nombre || mat.carrera || 'Clase', `${mat.grado}°`, mat.seccion, mat.profesores?.nombre || 'Sin profesor', presentes, excusados, ausentes, presentes + excusados + ausentes]);
         row.getCell(5).font = { bold: true, color: { argb: colorSecundario } };
         if (excusados > 0) row.getCell(6).font = { bold: true, color: { argb: 'FF0EA5E9' } };
+        if (ausentes > 0) row.getCell(7).font = { bold: true, color: { argb: 'FFEF4444' } };
         if (idx % 2 !== 0) row.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF7FAFC' } };
         currentRow++;
       });
 
-      const totPresentes = Array.from(grupos.values()).reduce((s, g) => s + g.asistencias.filter(a => a.estado !== 'excusado').length, 0);
+      const totPresentes = Array.from(grupos.values()).reduce((s, g) => s + g.asistencias.filter(a => a.estado === 'presente').length, 0);
       const totExcusados = Array.from(grupos.values()).reduce((s, g) => s + g.asistencias.filter(a => a.estado === 'excusado').length, 0);
-      const totalRow = worksheet.addRow(['', '', '', 'TOTALES:', totPresentes, totExcusados, totPresentes + totExcusados]);
+      const totAusentes  = Array.from(grupos.values()).reduce((s, g) => s + g.asistencias.filter(a => a.estado === 'ausente').length, 0);
+      const totalRow = worksheet.addRow(['', '', '', 'TOTALES:', totPresentes, totExcusados, totAusentes, totPresentes + totExcusados + totAusentes]);
       totalRow.getCell(4).font = { bold: true };
       totalRow.getCell(5).font = { bold: true, color: { argb: colorPrimario } };
       if (totExcusados > 0) totalRow.getCell(6).font = { bold: true, color: { argb: 'FF0EA5E9' } };
+      if (totAusentes > 0) totalRow.getCell(7).font = { bold: true, color: { argb: 'FFEF4444' } };
       currentRow++;
       worksheet.addRow([]); currentRow++; worksheet.addRow([]); currentRow++;
 
@@ -476,7 +505,7 @@ const exportarReporteCompletoExcel = async (req, res) => {
       for (const grupo of gruposOrdenados) {
         const mat = grupo.materia;
         const nombreProf = mat.profesores?.nombre || 'Sin profesor';
-        const presentesClase = grupo.asistencias.filter(a => a.estado !== 'excusado').length;
+        const presentesClase = grupo.asistencias.filter(a => a.estado === 'presente').length;
         const excusadosClase = grupo.asistencias.filter(a => a.estado === 'excusado').length;
 
         worksheet.mergeCells(`A${currentRow}:I${currentRow}`);
@@ -487,7 +516,8 @@ const exportarReporteCompletoExcel = async (req, res) => {
         worksheet.getRow(currentRow).height = 22; currentRow++;
 
         worksheet.mergeCells(`A${currentRow}:I${currentRow}`);
-        worksheet.getCell(`A${currentRow}`).value = `👤 Profesor: ${nombreProf}   |   ✅ Presentes: ${presentesClase}   |   🔵 Excusados: ${excusadosClase}`;
+        const ausentesClase = grupo.asistencias.filter(a => a.estado === 'ausente').length;
+        worksheet.getCell(`A${currentRow}`).value = `👤 Profesor: ${nombreProf}   |   ✅ Presentes: ${presentesClase}   |   🔵 Excusados: ${excusadosClase}   |   ❌ Ausentes: ${ausentesClase}`;
         worksheet.getCell(`A${currentRow}`).font = { italic: true, size: 10, color: { argb: 'FF555555' } };
         currentRow++;
 
@@ -500,12 +530,15 @@ const exportarReporteCompletoExcel = async (req, res) => {
           const dataRow = worksheet.addRow([
             est?.cedula || '', est?.nombre || '', est?.apellido || '',
             est?.grado || '', est?.seccion || '', est?.carrera || '',
-            esExcusado ? '—' : (item.hora || ''),
-            esExcusado ? '🔵 Excusado' : '✅ Presente'
+            (esExcusado || item.estado === 'ausente') ? '—' : (item.hora || ''),
+            esExcusado ? '🔵 Excusado' : item.estado === 'ausente' ? '❌ Ausente' : '✅ Presente'
           ]);
           if (esExcusado) {
             dataRow.eachCell(cell => { cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0F2FE' } }; cell.border = { bottom: { style: 'hair', color: { argb: 'FFB3E5FC' } } }; });
             dataRow.getCell(8).font = { bold: true, color: { argb: 'FF0EA5E9' } };
+          } else if (item.estado === 'ausente') {
+            dataRow.eachCell(cell => { cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } }; cell.border = { bottom: { style: 'hair', color: { argb: 'FFFECACA' } } }; });
+            dataRow.getCell(8).font = { bold: true, color: { argb: 'FFEF4444' } };
           } else {
             dataRow.eachCell(cell => { cell.border = { bottom: { style: 'hair', color: { argb: 'FFE2E8F0' } } }; });
           }
