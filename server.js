@@ -116,7 +116,6 @@ const institucionesRoutes = require('./routes/instituciones');
 const authPadreRoutes     = require('./routes/authPadre');
 const padresRoutes        = require('./routes/padres');
 const excusasRoutes       = require('./routes/excusas');
-const reportesPdfRoutes   = require('./routes/reportesPdf');
 
 // Rate limit agresivo para exportar Excel (max 10 req/min por IP)
 const limitExcel = rateLimit(10, 60000);
@@ -131,7 +130,6 @@ app.use('/api/instituciones',              limitNormal, institucionesRoutes);
 app.use('/api/auth-padre',                 limitNormal, authPadreRoutes);
 app.use('/api/padres',                     limitNormal, padresRoutes);
 app.use('/api/excusas',                    limitNormal, excusasRoutes);
-app.use('/api/reportes-pdf',               limitNormal, reportesPdfRoutes);
 
 // ============================================
 // JOB DIARIO DE FALTAS
