@@ -1,4 +1,4 @@
-const { supabase } = require('../config/supabase');
+const { supabase, supabaseAdmin } = require('../config/supabase');
 
 // ════════════════════════════════════════════════════════════════
 // AUTH
@@ -12,15 +12,15 @@ const registrarProfesorIndependiente = async (req, res) => {
   }
 
   try {
-    // 1. Crear usuario en Supabase Auth
-    const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+    // ✅ CORREGIDO: usa supabaseAdmin (service_role), no supabase (anon)
+    const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
       email,
       password,
       email_confirm: true,
     });
     if (authError) return res.status(400).json({ error: authError.message });
 
-    // 2. Crear fila en profesores_independientes
+    // 2. Crear fila en profesores_independientes (con cliente normal está bien)
     const { data, error } = await supabase
       .from('profesores_independientes')
       .insert([{ id: authData.user.id, nombre, email, activo: true }])
@@ -29,7 +29,7 @@ const registrarProfesorIndependiente = async (req, res) => {
 
     if (error) {
       // Si falla, eliminar el usuario de Auth para no dejar huérfanos
-      await supabase.auth.admin.deleteUser(authData.user.id);
+      await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
       return res.status(400).json({ error: error.message });
     }
 
@@ -89,7 +89,7 @@ const eliminarClase = async (req, res) => {
       .from('clases_independientes')
       .delete()
       .eq('id', id)
-      .eq('profesor_id', profesorId); // seguridad: solo puede borrar las suyas
+      .eq('profesor_id', profesorId);
     if (error) throw error;
     res.json({ success: true });
   } catch (err) {
@@ -105,7 +105,6 @@ const eliminarClase = async (req, res) => {
 const getEstudiantesDeClase = async (req, res) => {
   const { claseId } = req.params;
   try {
-    // Verificar que la clase pertenece al profesor
     const profesorId = req.user.id;
     const { data: clase } = await supabase
       .from('clases_independientes')
@@ -136,7 +135,6 @@ const crearEstudiante = async (req, res) => {
 
   try {
     const profesorId = req.user.id;
-    // Verificar que la clase pertenece al profesor
     const { data: clase } = await supabase
       .from('clases_independientes')
       .select('id')
