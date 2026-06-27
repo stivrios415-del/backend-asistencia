@@ -4,7 +4,6 @@ const { supabase, supabaseAdmin } = require('../config/supabase');
 // AUTH
 // ════════════════════════════════════════════════════════════════
 
-// Registro: crea usuario en Supabase Auth + fila en profesores_independientes
 const registrarProfesorIndependiente = async (req, res) => {
   const { email, nombre, password } = req.body;
   if (!email || !nombre || !password) {
@@ -12,7 +11,6 @@ const registrarProfesorIndependiente = async (req, res) => {
   }
 
   try {
-    // ✅ CORREGIDO: usa supabaseAdmin (service_role), no supabase (anon)
     const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
       email,
       password,
@@ -20,7 +18,6 @@ const registrarProfesorIndependiente = async (req, res) => {
     });
     if (authError) return res.status(400).json({ error: authError.message });
 
-    // 2. Crear fila en profesores_independientes (con cliente normal está bien)
     const { data, error } = await supabase
       .from('profesores_independientes')
       .insert([{ id: authData.user.id, nombre, email, activo: true }])
@@ -28,7 +25,6 @@ const registrarProfesorIndependiente = async (req, res) => {
       .single();
 
     if (error) {
-      // Si falla, eliminar el usuario de Auth para no dejar huérfanos
       await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
       return res.status(400).json({ error: error.message });
     }
@@ -95,6 +91,78 @@ const eliminarClase = async (req, res) => {
   } catch (err) {
     console.error('❌ Error en eliminarClase:', err.message);
     res.status(500).json({ error: 'Error al eliminar la clase' });
+  }
+};
+
+// ════════════════════════════════════════════════════════════════
+// ✅ NUEVO: MATERIAS (dentro de una clase)
+// ════════════════════════════════════════════════════════════════
+
+const getMateriasDeClase = async (req, res) => {
+  const { claseId } = req.params;
+  try {
+    const profesorId = req.user.id;
+    const { data: clase } = await supabase
+      .from('clases_independientes')
+      .select('id')
+      .eq('id', claseId)
+      .eq('profesor_id', profesorId)
+      .maybeSingle();
+    if (!clase) return res.status(403).json({ error: 'No tienes acceso a esta clase' });
+
+    const { data, error } = await supabase
+      .from('materias_independientes')
+      .select('*')
+      .eq('clase_id', claseId)
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('❌ Error en getMateriasDeClase:', err.message);
+    res.status(500).json({ error: 'Error al cargar materias' });
+  }
+};
+
+const crearMateria = async (req, res) => {
+  const { clase_id, nombre, descripcion } = req.body;
+  if (!clase_id || !nombre) return res.status(400).json({ error: 'Clase y nombre de materia son obligatorios' });
+
+  try {
+    const profesorId = req.user.id;
+    const { data: clase } = await supabase
+      .from('clases_independientes')
+      .select('id')
+      .eq('id', clase_id)
+      .eq('profesor_id', profesorId)
+      .maybeSingle();
+    if (!clase) return res.status(403).json({ error: 'No tienes acceso a esta clase' });
+
+    const { data, error } = await supabase
+      .from('materias_independientes')
+      .insert([{ clase_id, nombre, descripcion: descripcion || null }])
+      .select()
+      .single();
+    if (error) throw error;
+    console.log(`✅ Materia creada: ${nombre}`);
+    res.json(data);
+  } catch (err) {
+    console.error('❌ Error en crearMateria:', err.message);
+    res.status(500).json({ error: 'Error al crear la materia' });
+  }
+};
+
+const eliminarMateria = async (req, res) => {
+  const { id } = req.params;
+  try {
+    const { error } = await supabase
+      .from('materias_independientes')
+      .delete()
+      .eq('id', id);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Error en eliminarMateria:', err.message);
+    res.status(500).json({ error: 'Error al eliminar la materia' });
   }
 };
 
@@ -172,12 +240,14 @@ const eliminarEstudiante = async (req, res) => {
 };
 
 // ════════════════════════════════════════════════════════════════
-// ASISTENCIA
+// ASISTENCIA (✅ ahora requiere materia_id)
 // ════════════════════════════════════════════════════════════════
 
 const registrarAsistencia = async (req, res) => {
-  const { cedula, clase_id } = req.body;
-  if (!cedula || !clase_id) return res.status(400).json({ error: 'Cédula y clase son obligatorios' });
+  const { cedula, clase_id, materia_id } = req.body;
+  if (!cedula || !clase_id || !materia_id) {
+    return res.status(400).json({ error: 'Cédula, clase y materia son obligatorios' });
+  }
 
   try {
     const hoy = new Date().toISOString().split('T')[0];
@@ -194,13 +264,13 @@ const registrarAsistencia = async (req, res) => {
     const { data: yaRegistro } = await supabase
       .from('asistencia_independiente')
       .select('id')
-      .eq('cedula', cedula).eq('clase_id', clase_id).eq('fecha', hoy)
+      .eq('cedula', cedula).eq('materia_id', materia_id).eq('fecha', hoy)
       .maybeSingle();
-    if (yaRegistro) return res.status(400).json({ error: 'Este estudiante ya registró asistencia hoy', estudiante });
+    if (yaRegistro) return res.status(400).json({ error: 'Este estudiante ya registró asistencia en esta materia hoy', estudiante });
 
     const { error } = await supabase
       .from('asistencia_independiente')
-      .insert([{ cedula, clase_id, fecha: hoy, hora: ahora }]);
+      .insert([{ cedula, clase_id, materia_id, fecha: hoy, hora: ahora }]);
     if (error) throw error;
 
     res.json({ message: 'Asistencia registrada', estudiante, hora: ahora });
@@ -211,7 +281,7 @@ const registrarAsistencia = async (req, res) => {
 };
 
 const getAsistenciaHoy = async (req, res) => {
-  const { claseId } = req.params;
+  const { materiaId } = req.params;
   try {
     const hoy = new Date().toISOString().split('T')[0];
     const { data, error } = await supabase
@@ -220,7 +290,7 @@ const getAsistenciaHoy = async (req, res) => {
         id, fecha, hora,
         estudiantes_independientes (cedula, nombre, apellido, foto_url)
       `)
-      .eq('clase_id', claseId)
+      .eq('materia_id', materiaId)
       .eq('fecha', hoy);
     if (error) throw error;
     res.json(data || []);
@@ -231,13 +301,13 @@ const getAsistenciaHoy = async (req, res) => {
 };
 
 const limpiarAsistenciaHoy = async (req, res) => {
-  const { claseId } = req.params;
+  const { materiaId } = req.params;
   try {
     const hoy = new Date().toISOString().split('T')[0];
     const { error } = await supabase
       .from('asistencia_independiente')
       .delete()
-      .eq('clase_id', claseId)
+      .eq('materia_id', materiaId)
       .eq('fecha', hoy);
     if (error) throw error;
     res.json({ message: 'Asistencia del día limpiada' });
@@ -247,11 +317,11 @@ const limpiarAsistenciaHoy = async (req, res) => {
 };
 
 // ════════════════════════════════════════════════════════════════
-// REPORTES (rango de fechas)
+// ✅ REPORTES (por materia, con rango de fechas)
 // ════════════════════════════════════════════════════════════════
 
 const getReporte = async (req, res) => {
-  const { claseId } = req.params;
+  const { materiaId } = req.params;
   const { fechaInicio, fechaFin } = req.query;
   try {
     let query = supabase
@@ -260,7 +330,7 @@ const getReporte = async (req, res) => {
         id, fecha, hora,
         estudiantes_independientes (cedula, nombre, apellido)
       `)
-      .eq('clase_id', claseId);
+      .eq('materia_id', materiaId);
 
     if (fechaInicio) query = query.gte('fecha', fechaInicio);
     if (fechaFin) query = query.lte('fecha', fechaFin);
@@ -274,11 +344,40 @@ const getReporte = async (req, res) => {
   }
 };
 
+// ✅ Reporte completo de TODA la clase (todas las materias) — útil para exportar
+const getReporteClaseCompleto = async (req, res) => {
+  const { claseId } = req.params;
+  const { fechaInicio, fechaFin } = req.query;
+  try {
+    let query = supabase
+      .from('asistencia_independiente')
+      .select(`
+        id, fecha, hora, materia_id,
+        estudiantes_independientes (cedula, nombre, apellido),
+        materias_independientes (nombre)
+      `)
+      .eq('clase_id', claseId);
+
+    if (fechaInicio) query = query.gte('fecha', fechaInicio);
+    if (fechaFin) query = query.lte('fecha', fechaFin);
+
+    const { data, error } = await query.order('fecha', { ascending: false });
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('❌ Error en getReporteClaseCompleto:', err.message);
+    res.status(500).json({ error: 'Error al cargar reporte' });
+  }
+};
+
 module.exports = {
   registrarProfesorIndependiente,
   getMisClases,
   crearClase,
   eliminarClase,
+  getMateriasDeClase,
+  crearMateria,
+  eliminarMateria,
   getEstudiantesDeClase,
   crearEstudiante,
   eliminarEstudiante,
@@ -286,4 +385,5 @@ module.exports = {
   getAsistenciaHoy,
   limpiarAsistenciaHoy,
   getReporte,
+  getReporteClaseCompleto,
 };
