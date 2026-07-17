@@ -1,7 +1,10 @@
 const express = require('express');
+const multer = require('multer');
 const router = express.Router();
 const { verificarProfesorIndependiente } = require('../middleware/verificarProfesorIndependiente');
 const ctrl = require('../controllers/profesorIndependienteController');
+
+const upload = multer({ storage: multer.memoryStorage() });
 
 // ✅ Registro — público, sin token
 router.post('/registro', ctrl.registrarProfesorIndependiente);
@@ -14,7 +17,7 @@ router.get('/clases', ctrl.getMisClases);
 router.post('/clases', ctrl.crearClase);
 router.delete('/clases/:id', ctrl.eliminarClase);
 
-// ✅ Materias (dentro de una clase)
+// Materias
 router.get('/clases/:claseId/materias', ctrl.getMateriasDeClase);
 router.post('/materias', ctrl.crearMateria);
 router.delete('/materias/:id', ctrl.eliminarMateria);
@@ -22,9 +25,10 @@ router.delete('/materias/:id', ctrl.eliminarMateria);
 // Estudiantes
 router.get('/clases/:claseId/estudiantes', ctrl.getEstudiantesDeClase);
 router.post('/estudiantes', ctrl.crearEstudiante);
+router.post('/estudiantes/bulk-upload', upload.single('archivo'), ctrl.bulkUploadEstudiantes); // ✅ NUEVO
 router.delete('/estudiantes/:cedula', ctrl.eliminarEstudiante);
 
-// Asistencia (✅ ahora por materia)
+// Asistencia
 router.post('/asistencia', ctrl.registrarAsistencia);
 router.get('/materias/:materiaId/asistencia/hoy', ctrl.getAsistenciaHoy);
 router.delete('/materias/:materiaId/asistencia/hoy', ctrl.limpiarAsistenciaHoy);
@@ -32,5 +36,6 @@ router.delete('/materias/:materiaId/asistencia/hoy', ctrl.limpiarAsistenciaHoy);
 // Reportes
 router.get('/materias/:materiaId/reporte', ctrl.getReporte);
 router.get('/clases/:claseId/reporte-completo', ctrl.getReporteClaseCompleto);
+router.get('/clases/:claseId/exportar-excel', ctrl.exportarReporteExcel); // ✅ NUEVO
 
 module.exports = router;
