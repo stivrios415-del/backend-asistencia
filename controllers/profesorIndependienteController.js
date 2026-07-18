@@ -568,9 +568,46 @@ const exportarReporteExcel = async (req, res) => {
     res.status(500).json({ error: err.message || 'Error al generar el reporte' });
   }
 };
+// ════════════════════════════════════════════════════════════════
+// ✅ NUEVO: CÓDIGO DE ACCESO (control manual de pago)
+// ════════════════════════════════════════════════════════════════
+
+const verificarCodigoAcceso = async (req, res) => {
+  const { codigo } = req.body;
+  if (!codigo || !codigo.trim()) {
+    return res.status(400).json({ valido: false, error: 'Debes ingresar un código' });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('codigos_acceso_independiente')
+      .select('id, activo')
+      .eq('codigo', codigo.trim())
+      .maybeSingle();
+
+    if (error) throw error;
+
+    if (!data || !data.activo) {
+      return res.status(401).json({ valido: false, error: 'Código inválido o inactivo' });
+    }
+
+    console.log(`✅ Código de acceso verificado: ${codigo.trim()}`);
+    res.json({ valido: true });
+  } catch (err) {
+    console.error('❌ Error en verificarCodigoAcceso:', err.message);
+    res.status(500).json({ valido: false, error: 'Error al verificar el código' });
+  }
+};
+
+// ────────────────────────────────────────────────────────────────
+// Agrega "verificarCodigoAcceso," dentro de module.exports, junto
+// a "registrarProfesorIndependiente" — ambas deben ir en la lista
+// de funciones exportadas.
+// ────────────────────────────────────────────────────────────────
 
 module.exports = {
   registrarProfesorIndependiente,
+  verificarCodigoAcceso,
   getMisClases,
   crearClase,
   eliminarClase,
