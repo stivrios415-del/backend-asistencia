@@ -604,11 +604,54 @@ const verificarCodigoAcceso = async (req, res) => {
 // a "registrarProfesorIndependiente" — ambas deben ir en la lista
 // de funciones exportadas.
 // ────────────────────────────────────────────────────────────────
+const vincularCodigoAcceso = async (req, res) => {
+  const { codigo } = req.body;
+  const profesorId = req.user.id; // viene del middleware, ya logueado
+
+  if (!codigo || !codigo.trim()) {
+    return res.status(400).json({ error: 'Debes ingresar un código' });
+  }
+
+  const codigoLimpio = codigo.trim();
+
+  try {
+    const { data: codigoData, error } = await supabase
+      .from('codigos_acceso_independiente')
+      .select('id, activo, profesor_id')
+      .eq('codigo', codigoLimpio)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!codigoData || !codigoData.activo) {
+      return res.status(401).json({ error: 'Código inválido o inactivo' });
+    }
+
+    // Ya pertenece a OTRO profesor → rechazar
+    if (codigoData.profesor_id && codigoData.profesor_id !== profesorId) {
+      return res.status(403).json({ error: 'Este código ya está en uso por otra cuenta' });
+    }
+
+    // Todavía libre → lo casamos con esta cuenta
+    if (!codigoData.profesor_id) {
+      const { error: updateError } = await supabase
+        .from('codigos_acceso_independiente')
+        .update({ profesor_id: profesorId, fecha_vinculacion: new Date().toISOString() })
+        .eq('id', codigoData.id);
+      if (updateError) throw updateError;
+      console.log(`✅ Código ${codigoLimpio} vinculado al profesor ${profesorId}`);
+    }
+
+    res.json({ success: true, vinculado: true });
+  } catch (err) {
+    console.error('❌ Error en vincularCodigoAcceso:', err.message);
+    res.status(500).json({ error: 'Error al vincular el código' });
+  }
+};
 
 module.exports = {
   registrarProfesorIndependiente,
   verificarCodigoAcceso,
-   vincularCodigoAcceso,
+  vincularCodigoAcceso,
   getMisClases,
   crearClase,
   eliminarClase,
