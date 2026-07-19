@@ -568,10 +568,15 @@ const exportarReporteExcel = async (req, res) => {
     res.status(500).json({ error: err.message || 'Error al generar el reporte' });
   }
 };
+
 // ════════════════════════════════════════════════════════════════
-// ✅ NUEVO: CÓDIGO DE ACCESO (control manual de pago)
+// ✅ CÓDIGO DE ACCESO (control manual de pago)
 // ════════════════════════════════════════════════════════════════
 
+// Se llama ANTES de iniciar sesión (pública, sin token).
+// Solo confirma que el código exista y esté activo, y avisa si ya
+// tiene una cuenta vinculada (para que el frontend le diga al
+// profesor que debe iniciar sesión con esa cuenta en vez de crear otra).
 const verificarCodigoAcceso = async (req, res) => {
   const { codigo } = req.body;
   if (!codigo || !codigo.trim()) {
@@ -581,7 +586,7 @@ const verificarCodigoAcceso = async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('codigos_acceso_independiente')
-      .select('id, activo')
+      .select('id, activo, profesor_id')
       .eq('codigo', codigo.trim())
       .maybeSingle();
 
@@ -591,19 +596,17 @@ const verificarCodigoAcceso = async (req, res) => {
       return res.status(401).json({ valido: false, error: 'Código inválido o inactivo' });
     }
 
-    console.log(`✅ Código de acceso verificado: ${codigo.trim()}`);
-    res.json({ valido: true });
+    console.log(`✅ Código de acceso verificado: ${codigo.trim()}${data.profesor_id ? ' (ya vinculado)' : ' (libre)'}`);
+    res.json({ valido: true, yaVinculado: !!data.profesor_id });
   } catch (err) {
     console.error('❌ Error en verificarCodigoAcceso:', err.message);
     res.status(500).json({ valido: false, error: 'Error al verificar el código' });
   }
 };
 
-// ────────────────────────────────────────────────────────────────
-// Agrega "verificarCodigoAcceso," dentro de module.exports, junto
-// a "registrarProfesorIndependiente" — ambas deben ir en la lista
-// de funciones exportadas.
-// ────────────────────────────────────────────────────────────────
+// Se llama DESPUÉS de iniciar sesión o registrarse (requiere token).
+// "Casa" el código con la cuenta: si está libre lo reclama, si ya es
+// de esta misma cuenta no hace nada, si es de otra cuenta lo rechaza.
 const vincularCodigoAcceso = async (req, res) => {
   const { codigo } = req.body;
   const profesorId = req.user.id; // viene del middleware, ya logueado
