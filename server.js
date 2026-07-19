@@ -231,7 +231,8 @@ const institucionesRoutes          = require('./routes/instituciones');
 const authPadreRoutes              = require('./routes/authPadre');
 const padresRoutes                 = require('./routes/padres');
 const excusasRoutes                = require('./routes/excusas');
-const profesorIndependienteRoutes  = require('./routes/profesorIndependiente'); // ✅ NUEVO
+const profesorIndependienteRoutes  = require('./routes/profesorIndependiente');
+const masterAdminRoutes            = require('./routes/masterAdmin'); // ✅ NUEVO: panel del dueño de la app (distinto del admin institucional)
 
 let reportesPdfRoutes = null;
 try {
@@ -249,13 +250,16 @@ app.use('/api/estudiantes',   limitNormal, estudiantesRoutes);
 
 // Endpoints privados
 app.use('/api/asistencia',    limitNormal, asistenciaRoutes);
-app.use('/api/admin',         limitNormal, adminRoutes);
+app.use('/api/admin',         limitNormal, adminRoutes); // admin institucional (rol 'admin' en profesores)
 app.use('/api/materias',      limitNormal, materiasRoutes);
 app.use('/api/padres',        limitNormal, padresRoutes);
 app.use('/api/excusas',       limitNormal, excusasRoutes);
 
-// ✅ NUEVO: rutas del profesor independiente (registro con rate limit auth, resto normal)
+// Rutas del profesor independiente (registro con rate limit auth, resto normal)
 app.use('/api/profesor-independiente', limitNormal, profesorIndependienteRoutes);
+
+// ✅ NUEVO: panel del master admin (tú) — código secreto propio, prefijo separado
+app.use('/api/master-admin', limitNormal, masterAdminRoutes);
 
 // PDF con rate limit de exportación
 if (reportesPdfRoutes) {
@@ -293,5 +297,5 @@ app.listen(PORT, () => {
   console.log(`\n🚀 Servidor en puerto ${PORT}`);
   console.log(`🔒 Modo: ${process.env.NODE_ENV || 'development'}`);
   console.log(`📋 Rutas: estudiantes | asistencia | admin | materias`);
-  console.log(`         instituciones | auth-padre | padres | excusas | profesor-independiente\n`);
+  console.log(`         instituciones | auth-padre | padres | excusas | profesor-independiente | master-admin\n`);
 });
