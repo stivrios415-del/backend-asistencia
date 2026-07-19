@@ -570,6 +570,42 @@ const exportarReporteExcel = async (req, res) => {
 };
 
 // ════════════════════════════════════════════════════════════════
+// ✅ NUEVO: ESTADO DE SUSCRIPCIÓN (control de pago por fecha de vencimiento)
+// ════════════════════════════════════════════════════════════════
+
+// Se llama justo después de iniciar sesión (requiere token).
+// El frontend usa esto para decidir si deja pasar al profesor o le
+// muestra una pantalla de "suscripción vencida".
+const getMiEstado = async (req, res) => {
+  try {
+    const profesorId = req.user.id;
+
+    const { data: profesor, error } = await supabase
+      .from('profesores_independientes')
+      .select('nombre, email, fecha_vencimiento')
+      .eq('id', profesorId)
+      .single();
+
+    if (error) throw error;
+    if (!profesor) return res.status(404).json({ error: 'Profesor no encontrado' });
+
+    // Sin fecha asignada todavía → lo tratamos como NO activo (para que
+    // no se cuele nadie que se registró pero nunca configuraste su fecha)
+    const hoy = new Date().toISOString().split('T')[0];
+    const activo = !!profesor.fecha_vencimiento && profesor.fecha_vencimiento >= hoy;
+
+    res.json({
+      activo,
+      fecha_vencimiento: profesor.fecha_vencimiento,
+      nombre: profesor.nombre,
+    });
+  } catch (err) {
+    console.error('❌ Error en getMiEstado:', err.message);
+    res.status(500).json({ error: 'Error al consultar el estado de la cuenta' });
+  }
+};
+
+// ════════════════════════════════════════════════════════════════
 // ✅ CÓDIGO DE ACCESO (control manual de pago)
 // ════════════════════════════════════════════════════════════════
 
@@ -655,6 +691,7 @@ module.exports = {
   registrarProfesorIndependiente,
   verificarCodigoAcceso,
   vincularCodigoAcceso,
+  getMiEstado,
   getMisClases,
   crearClase,
   eliminarClase,
