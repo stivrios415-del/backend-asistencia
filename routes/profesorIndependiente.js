@@ -15,6 +15,9 @@ router.post('/verificar-codigo', ctrl.verificarCodigoAcceso);
 // 🔒 Todo lo demás requiere token de profesor independiente
 router.use(verificarProfesorIndependiente);
 
+// ✅ NUEVO: Vincular código a la cuenta — requiere estar logueado
+router.post('/vincular-codigo', ctrl.vincularCodigoAcceso);
+
 // Clases
 router.get('/clases', ctrl.getMisClases);
 router.post('/clases', ctrl.crearClase);
