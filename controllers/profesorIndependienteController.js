@@ -608,6 +608,7 @@ const verificarCodigoAcceso = async (req, res) => {
 module.exports = {
   registrarProfesorIndependiente,
   verificarCodigoAcceso,
+   vincularCodigoAcceso,
   getMisClases,
   crearClase,
   eliminarClase,
