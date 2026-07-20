@@ -6,27 +6,13 @@ const ctrl = require('../controllers/profesorIndependienteController');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-// ✅ Registro — público, sin token
+// Registro y login — públicos
 router.post('/registro', ctrl.registrarProfesorIndependiente);
 
-// ✅ NUEVO: Verificación del código de acceso — público, sin token
-router.post('/verificar-codigo', ctrl.verificarCodigoAcceso);
-
-// 🔒 Todo lo demás requiere token de profesor independiente
+// 🔒 Todo lo demás requiere token
 router.use(verificarProfesorIndependiente);
 
-// ✅ NUEVO: Vincular código a la cuenta — requiere estar logueado
-router.post('/vincular-codigo', ctrl.vincularCodigoAcceso);
-// 🔒 Todo lo demás requiere token de profesor independiente
-router.use(verificarProfesorIndependiente);
-
-// ✅ NUEVO: Estado de suscripción — requiere estar logueado
 router.get('/mi-estado', ctrl.getMiEstado);
-
-// ✅ NUEVO: Vincular código a la cuenta — requiere estar logueado
-router.post('/vincular-codigo', ctrl.vincularCodigoAcceso);
-
-// ...el resto igual
 
 // Clases
 router.get('/clases', ctrl.getMisClases);
