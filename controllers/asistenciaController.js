@@ -4,6 +4,23 @@ const JSZip = require('jszip');
 const { notificarTardanza, notificarAsistencia, notificarFaltaClase } = require('../services/notificacionService');
 
 const HORA_LIMITE_TARDANZA = '07:30';
+const ZONA_HORARIA = 'America/Tegucigalpa';
+
+// ========== HELPER: fecha y hora en horario de Honduras ==========
+// en-CA devuelve directamente el formato YYYY-MM-DD, ideal para comparar/guardar en Supabase
+function fechaHondurasHoy() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: ZONA_HORARIA });
+}
+
+function horaHondurasAhora() {
+  return new Date().toLocaleTimeString('en-GB', { hour12: false, timeZone: ZONA_HORARIA });
+}
+
+// Convierte cualquier objeto Date a "YYYY-MM-DD" en horario de Honduras
+// (reemplazo seguro para new Date(...).toISOString().split('T')[0])
+function formatearFechaHonduras(date) {
+  return date.toLocaleDateString('en-CA', { timeZone: ZONA_HORARIA });
+}
 
 // ========== HELPER: escapar XML ==========
 function escapeXml(str) {
@@ -134,11 +151,11 @@ function normalizarTexto(str) {
 }
 
 async function contarFaltasEnMes(cedula, año, mes) {
-  const primerDia = new Date(año, mes - 1, 1).toISOString().split('T')[0];
+  const primerDia = formatearFechaHonduras(new Date(año, mes - 1, 1));
   const hoy = new Date();
   const ultimoDia = (año === hoy.getFullYear() && mes === hoy.getMonth() + 1)
-    ? hoy.toISOString().split('T')[0]
-    : new Date(año, mes, 0).toISOString().split('T')[0];
+    ? fechaHondurasHoy()
+    : formatearFechaHonduras(new Date(año, mes, 0));
   const { data, error } = await supabase.from('asistencia').select('fecha').eq('cedula', cedula)
     .gte('fecha', primerDia).lte('fecha', ultimoDia);
   if (error) return 0;
@@ -195,8 +212,8 @@ const registrarAsistencia = async (req, res) => {
       normalizarTexto(estudiante.carrera) !== normalizarTexto(materia.carrera)) {
     return res.status(400).json({ error: `Este estudiante no pertenece a esta clase. Solo se permite para grado ${materia.grado} - ${materia.carrera}.` });
   }
-  const hoy = new Date().toISOString().split('T')[0];
-  const ahora = new Date().toLocaleTimeString('en-GB', { hour12: false });
+  const hoy = fechaHondurasHoy();
+  const ahora = horaHondurasAhora();
   const { data: yaRegistro } = await supabase.from('asistencia').select('id')
     .eq('cedula', cedula).eq('fecha', hoy).eq('materia_id', materiaId).maybeSingle();
   if (yaRegistro) return res.status(400).json({ error: 'Este estudiante ya registró asistencia en esta clase hoy', estudiante });
@@ -219,7 +236,7 @@ const registrarAsistencia = async (req, res) => {
 
 // ========== ASISTENCIA DEL DÍA ==========
 const getAsistenciaHoy = async (req, res) => {
-  const hoy = new Date().toISOString().split('T')[0];
+  const hoy = fechaHondurasHoy();
   const añoActual = new Date().getFullYear();
   const mesActual = new Date().getMonth() + 1;
   const { profesorEmail } = req.query;
@@ -259,7 +276,7 @@ const getAsistenciaByFecha = async (req, res) => {
 
 const getAsistenciaPorGrado = async (req, res) => {
   const { grado, seccion, fecha } = req.query; const institucion_id = req.user.institucion_id;
-  const fechaFiltro = fecha || new Date().toISOString().split('T')[0];
+  const fechaFiltro = fecha || fechaHondurasHoy();
   let query = supabase.from('asistencia').select(`id, fecha, hora, estado, estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)`).eq('fecha', fechaFiltro);
   if (institucion_id) query = query.eq('institucion_id', institucion_id);
   const { data, error } = await query;
@@ -271,7 +288,7 @@ const getAsistenciaPorGrado = async (req, res) => {
 };
 
 const limpiarAsistenciaHoy = async (req, res) => {
-  const hoy = new Date().toISOString().split('T')[0]; const institucion_id = req.user.institucion_id;
+  const hoy = fechaHondurasHoy(); const institucion_id = req.user.institucion_id;
   let query = supabase.from('asistencia').delete().eq('fecha', hoy).neq('estado', 'excusado');
   if (institucion_id) query = query.eq('institucion_id', institucion_id);
   const { error } = await query;
@@ -437,7 +454,7 @@ const exportarReporteCompletoExcel = async (req, res) => {
     worksheet.getCell(`A${currentRow}`).alignment = { horizontal: 'center', vertical: 'middle' };
     worksheet.getRow(currentRow).height = 35; currentRow++;
 
-    const fechaLegible = new Date(fecha + 'T12:00:00').toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'America/Tegucigalpa' });
+    const fechaLegible = new Date(fecha + 'T12:00:00').toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: ZONA_HORARIA });
     worksheet.mergeCells(`A${currentRow}:I${currentRow}`);
     worksheet.getCell(`A${currentRow}`).value = `Reporte de Asistencia — ${fechaLegible}`;
     worksheet.getCell(`A${currentRow}`).font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
@@ -575,7 +592,7 @@ const getEstadisticas = async (req, res) => {
     const { fechaInicio, fechaFin, profesorEmail } = req.query; const institucion_id = req.user.institucion_id;
     let inicio, fin;
     if (fechaInicio && fechaFin) { inicio = fechaInicio; fin = fechaFin; }
-    else { const hoy = new Date(); inicio = new Date(hoy.getFullYear(), hoy.getMonth(), 1).toISOString().split('T')[0]; fin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).toISOString().split('T')[0]; }
+    else { const hoy = new Date(); inicio = formatearFechaHonduras(new Date(hoy.getFullYear(), hoy.getMonth(), 1)); fin = formatearFechaHonduras(new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0)); }
     const filtros = await obtenerFiltrosProfesor(profesorEmail, institucion_id);
     const estudiantes = await obtenerEstudiantesFiltrados(filtros, institucion_id);
     if (estudiantes.length === 0) return res.json({ masFaltas: [], mejorRecord: [], totalDias: 0, resumenGradoCarrera: [] });
@@ -622,7 +639,7 @@ const exportarEstadisticasExcel = async (req, res) => {
     const nombreInstitucion = institucion.nombre;
     let inicio, fin;
     if (fechaInicio && fechaFin) { inicio = fechaInicio; fin = fechaFin; }
-    else { const hoy = new Date(); inicio = new Date(hoy.getFullYear(), hoy.getMonth(), 1).toISOString().split('T')[0]; fin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).toISOString().split('T')[0]; }
+    else { const hoy = new Date(); inicio = formatearFechaHonduras(new Date(hoy.getFullYear(), hoy.getMonth(), 1)); fin = formatearFechaHonduras(new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0)); }
     const filtros = await obtenerFiltrosProfesor(profesorEmail, institucion_id);
     const estudiantes = await obtenerEstudiantesFiltrados(filtros, institucion_id);
     let asistencias = [];
@@ -682,7 +699,7 @@ const finalizarClase = async (req, res) => {
   if (!materiaId) return res.status(400).json({ error: 'Falta materiaId' });
 
   try {
-    const hoy = new Date().toISOString().split('T')[0];
+    const hoy = fechaHondurasHoy();
 
     // 1. Datos de la materia
     const { data: materia, error: errMat } = await supabase
@@ -724,7 +741,7 @@ const finalizarClase = async (req, res) => {
 
     // 5. Notificar en background
     const nombreClase = nombreMateria || materia.nombre || materia.carrera;
-    const horaActual  = new Date().toLocaleTimeString('en-GB', { hour12: false });
+    const horaActual  = horaHondurasAhora();
 
     for (const est of todosEstudiantes) {
       try {
