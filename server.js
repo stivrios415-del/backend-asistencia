@@ -10,8 +10,38 @@ const app  = express();
 const PORT = process.env.PORT || 3000;
 
 // ============================================
+// FAIL-FAST: variables de entorno criticas
+// Si falta una clave critica, el servidor NO arranca.
+// Mejor un crash claro en el deploy que un servidor
+// corriendo a medias con Supabase mal configurado.
+// ============================================
+const ENV_REQUERIDAS = ['SUPABASE_URL', 'SUPABASE_KEY'];
+const faltantes = ENV_REQUERIDAS.filter((k) => !process.env[k]);
+if (faltantes.length > 0) {
+  console.error(`❌ Faltan variables de entorno criticas: ${faltantes.join(', ')}`);
+  process.exit(1);
+}
+if (!process.env.SUPABASE_SERVICE_KEY) {
+  console.warn('⚠️ SUPABASE_SERVICE_KEY no configurada — funciones de administrador (crear profesores, etc.) fallaran.');
+}
+
+// ============================================
+// CONFIAR EN EL PROXY DE RENDER
+// Sin esto, req.ip devuelve la IP del proxy interno
+// de Render, NO la IP real del cliente. Esto rompe
+// por completo el rate limiting y la deteccion de
+// abuso: todas las peticiones parecerian venir de
+// la misma IP (o de una IP interna), haciendo que
+// el bloqueo por IP nunca funcione como se espera.
+// '1' = confiar en el primer proxy delante de la app
+// (correcto para Render, que pone un solo proxy).
+// ============================================
+app.set('trust proxy', 1);
+
+// ============================================
 // SEGURIDAD: HEADERS HTTP (Helmet manual)
-// Protege contra XSS, clickjacking, sniffing
+// Protege contra XSS, clickjacking, sniffing,
+// fugas de referrer y de origen cruzado.
 // ============================================
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options',    'nosniff');
@@ -20,13 +50,26 @@ app.use((req, res, next) => {
   res.setHeader('Referrer-Policy',           'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy',        'camera=(), microphone=(), geolocation=()');
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  // Evita que el navegador precargue DNS de enlaces externos (fuga leve de privacidad)
+  res.setHeader('X-DNS-Prefetch-Control',    'off');
+  // Bloquea que otras ventanas del mismo origen accedan a esta via window.opener
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  // Evita que otros origenes incluyan tus recursos (imagenes, JSON) directamente
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  // Bloquea politicas de Flash/PDF cross-domain (legacy, pero gratis de cerrar)
+  res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+  // CSP minima: como esta API sirve JSON (no HTML dinamico), se restringe todo
+  // por defecto. Si en el futuro sirves HTML propio desde /public, ajusta esto.
+  res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'");
   res.removeHeader('X-Powered-By'); // No revelar que es Express
   next();
 });
 
 // ============================================
 // SEGURIDAD: CORS estricto
-// Solo permite orígenes conocidos
+// Solo permite origenes conocidos — antes esta
+// funcion ignoraba por completo la lista blanca
+// y aceptaba CUALQUIER origen (bug critico).
 // ============================================
 const origenesPermitidos = [
   'https://backend-asistencia-nhny.onrender.com',
@@ -36,8 +79,16 @@ const origenesPermitidos = [
 
 app.use(cors({
   origin: (origin, callback) => {
+    // Apps nativas (RN/Expo) y herramientas como curl/Postman no mandan
+    // header Origin — se permiten porque no representan un navegador
+    // ejecutando JS de un sitio de terceros.
     if (!origin) return callback(null, true);
-    return callback(null, true);
+
+    const permitido = origenesPermitidos.some((o) => origin.startsWith(o));
+    if (permitido) return callback(null, true);
+
+    console.warn(`🚨 CORS bloqueado para origen no autorizado: ${origin}`);
+    return callback(new Error('No permitido por CORS'));
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
@@ -48,6 +99,12 @@ app.use(cors({
 
 // ============================================
 // SEGURIDAD: SANITIZAR INPUT
+// Antes solo se sanitizaba req.query. Los campos
+// de req.body (nombre, descripcion, etc.) llegaban
+// sin filtrar — un profesor podria guardar un
+// <script> en el nombre de una clase, que luego se
+// renderiza en el panel admin (XSS almacenado) o en
+// el Excel exportado.
 // ============================================
 const sanitizarString = (str) => {
   if (typeof str !== 'string') return str;
@@ -56,6 +113,21 @@ const sanitizarString = (str) => {
     .replace(/[<>]/g, '')
     .trim()
     .substring(0, 500);
+};
+
+// Sanitiza recursivamente objetos/arrays anidados en el body,
+// sin tocar tipos que no son string (numeros, booleanos, null).
+const sanitizarProfundo = (valor) => {
+  if (typeof valor === 'string') return sanitizarString(valor);
+  if (Array.isArray(valor)) return valor.map(sanitizarProfundo);
+  if (valor && typeof valor === 'object') {
+    const limpio = {};
+    for (const key of Object.keys(valor)) {
+      limpio[key] = sanitizarProfundo(valor[key]);
+    }
+    return limpio;
+  }
+  return valor;
 };
 
 app.use((req, res, next) => {
@@ -78,7 +150,7 @@ app.use((req, res, next) => {
 });
 
 // ============================================
-// CACHÉ EN MEMORIA
+// CACHE EN MEMORIA
 // ============================================
 const cache = new Map();
 const cacheGet = (key) => {
@@ -100,7 +172,11 @@ setInterval(() => {
 app.locals.cache = { get: cacheGet, set: cacheSet, del: cacheDel };
 
 // ============================================
-// RATE LIMITING con detección de abuso
+// RATE LIMITING con deteccion de abuso
+// Ahora que 'trust proxy' esta configurado arriba,
+// req.ip refleja la IP real del cliente y no la
+// del proxy de Render — esto es lo que hace que
+// este bloque realmente funcione en produccion.
 // ============================================
 const rateLimitMap  = new Map();
 const abusoMap      = new Map();
@@ -156,10 +232,20 @@ const limitNormal = rateLimit(200, 60000);
 const limitPub    = rateLimit(50,  60000);
 
 // ============================================
-// BODY PARSER con límites de tamaño
+// BODY PARSER con limites de tamano
 // ============================================
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
+
+// Sanitizacion profunda del body — se aplica DESPUES del parser,
+// porque antes de este punto req.body todavia no existe.
+app.use((req, res, next) => {
+  if (req.body && typeof req.body === 'object') {
+    req.body = sanitizarProfundo(req.body);
+  }
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ============================================
@@ -178,7 +264,10 @@ app.use((req, res, next) => {
 });
 
 // ============================================
-// SEGURIDAD: Detectar inyección SQL básica
+// SEGURIDAD: Detectar inyeccion SQL basica
+// Defensa en profundidad — Supabase ya usa
+// queries parametrizadas, asi que esto es una
+// capa extra, no la unica proteccion.
 // ============================================
 const patronesSQL = [
   /(\bUNION\b|\bSELECT\b|\bDROP\b|\bINSERT\b|\bDELETE\b|\bUPDATE\b)/i,
@@ -189,8 +278,8 @@ app.use((req, res, next) => {
   const contenido = JSON.stringify({ ...req.query, ...req.body });
   for (const patron of patronesSQL) {
     if (patron.test(contenido)) {
-      console.warn(`🚨 Posible inyección SQL detectada — IP: ${req.ip} URL: ${req.url}`);
-      return res.status(400).json({ error: 'Petición inválida' });
+      console.warn(`🚨 Posible inyeccion SQL detectada — IP: ${req.ip} URL: ${req.url}`);
+      return res.status(400).json({ error: 'Peticion invalida' });
     }
   }
   next();
@@ -232,7 +321,7 @@ const authPadreRoutes              = require('./routes/authPadre');
 const padresRoutes                 = require('./routes/padres');
 const excusasRoutes                = require('./routes/excusas');
 const profesorIndependienteRoutes  = require('./routes/profesorIndependiente');
-const masterAdminRoutes            = require('./routes/masterAdmin'); // ✅ NUEVO: panel del dueño de la app (distinto del admin institucional)
+const masterAdminRoutes            = require('./routes/masterAdmin'); // panel del dueno de la app (distinto del admin institucional)
 
 let reportesPdfRoutes = null;
 try {
@@ -244,7 +333,7 @@ try {
 // Auth con rate limit estricto
 app.use('/api/auth-padre',    limitAuth,   authPadreRoutes);
 
-// Endpoints públicos
+// Endpoints publicos
 app.use('/api/instituciones', limitPub,    institucionesRoutes);
 app.use('/api/estudiantes',   limitNormal, estudiantesRoutes);
 
@@ -258,10 +347,12 @@ app.use('/api/excusas',       limitNormal, excusasRoutes);
 // Rutas del profesor independiente (registro con rate limit auth, resto normal)
 app.use('/api/profesor-independiente', limitNormal, profesorIndependienteRoutes);
 
-// ✅ NUEVO: panel del master admin (tú) — código secreto propio, prefijo separado
-app.use('/api/master-admin', limitNormal, masterAdminRoutes);
+// Panel del master admin (tu) — codigo secreto propio, prefijo separado.
+// Este endpoint deberia tener rate limit MAS estricto que el normal,
+// ya que un acceso exitoso da control total sobre instituciones.
+app.use('/api/master-admin', limitAuth, masterAdminRoutes);
 
-// PDF con rate limit de exportación
+// PDF con rate limit de exportacion
 if (reportesPdfRoutes) {
   app.use('/api/reportes-pdf', limitExcel, reportesPdfRoutes);
 }
@@ -275,19 +366,30 @@ try {
 } catch (e) { console.warn('⚠️ Job de faltas no iniciado:', e.message); }
 
 // ============================================
+// 404 — rutas no encontradas
+// Se coloca ANTES del manejador de errores, siguiendo
+// la convencion de Express: primero se agota la busqueda
+// de rutas validas, y solo despues entra el manejo de errores.
+// ============================================
+app.use((req, res) => {
+  res.status(404).json({ error: 'Ruta no encontrada' });
+});
+
+// ============================================
 // MANEJO DE ERRORES GLOBAL
+// Debe ser el ULTIMO app.use() del archivo.
 // ============================================
 app.use((err, req, res, next) => {
   const esProduccion = process.env.NODE_ENV === 'production';
-  console.error(`❌ Error [${req.requestId}]:`, err.message, err.stack);
-  res.status(err.status || 500).json({
+
+  // El mensaje de CORS bloqueado no deberia tratarse como error 500
+  const status = err.status || (err.message === 'No permitido por CORS' ? 403 : 500);
+
+  console.error(`❌ Error [${req.requestId}]:`, err.message, esProduccion ? '' : err.stack);
+  res.status(status).json({
     error: esProduccion ? 'Error interno del servidor' : err.message,
     requestId: req.requestId,
   });
-});
-
-app.use((req, res) => {
-  res.status(404).json({ error: 'Ruta no encontrada' });
 });
 
 // ============================================
