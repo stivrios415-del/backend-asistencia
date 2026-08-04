@@ -1,12 +1,28 @@
-const { supabase } = require('../config/supabase');
+const crypto = require('crypto');
+const { supabase, supabaseAuth } = require('../config/supabase');
 
 // ============================================
 // SEGURIDAD: Cache de tokens validados
 // Evita verificar el mismo token en cada req
 // TTL 5 minutos
+//
+// FIX CRITICO: antes la clave de cache era
+// token.substring(0, 32) — los primeros 32
+// caracteres de un JWT son casi siempre el
+// header codificado (alg + typ), que es IDENTICO
+// para todos los usuarios de un mismo proyecto
+// Supabase. Eso causaba colisiones: el token de
+// un usuario podia recibir los datos cacheados
+// de OTRO usuario (incluyendo su rol e institucion).
+//
+// Ahora se usa un hash SHA-256 del token COMPLETO
+// como clave. Es unico por token, de largo fijo, y
+// ademas evita guardar el token crudo en memoria.
 // ============================================
 const tokenCache = new Map();
 const TOKEN_CACHE_TTL = 5 * 60 * 1000;
+
+const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
 
 setInterval(() => {
   const now = Date.now();
@@ -29,26 +45,32 @@ const verificarToken = async (req, res, next) => {
 
     const token = authHeader.split(' ')[1];
 
-    // Validar que el token no esté vacío o sea demasiado corto
-    if (!token || token.length < 20) {
-      return res.status(401).json({ error: 'Token inválido' });
+    // Validar que el token no este vacio, sea demasiado corto,
+    // o no tenga la estructura basica de un JWT (header.payload.firma)
+    if (!token || token.length < 20 || token.split('.').length !== 3) {
+      return res.status(401).json({ error: 'Token invalido' });
     }
 
-    // ── Verificar cache primero ──
-    const tokenKey = token.substring(0, 32); // Usar prefijo como key
+    // -- Verificar cache primero (clave = hash del token completo) --
+    const tokenKey = hashToken(token);
     const cached   = tokenCache.get(tokenKey);
     if (cached && Date.now() < cached.expira) {
       req.user = cached.user;
       return next();
     }
 
-    // ── Verificar con Supabase ──
-    const { data: { user }, error } = await supabase.auth.getUser(token);
+    // -- Verificar con Supabase --
+    // Usa supabaseAuth (anon key), NO supabase (service_role), para
+    // validar el JWT del usuario. Mezclar service_role con auth.getUser()
+    // puede causar fallos de validacion incorrectos.
+    const { data: { user }, error } = await supabaseAuth.auth.getUser(token);
     if (error || !user) {
-      return res.status(401).json({ error: 'Token inválido o expirado' });
+      return res.status(401).json({ error: 'Token invalido o expirado' });
     }
 
-    // ── Verificar en base de datos ──
+    // -- Verificar en base de datos --
+    // Aqui SI se usa 'supabase' (service_role): es una lectura de datos,
+    // no una validacion de identidad, y necesita bypasear RLS.
     const { data: usuarioDB, error: dbError } = await supabase
       .from('usuarios')
       .select('id, rol, institucion_id, activo')
@@ -59,7 +81,7 @@ const verificarToken = async (req, res, next) => {
       return res.status(401).json({ error: 'Usuario no registrado en el sistema' });
     }
 
-    // ── Verificar si el usuario está activo ──
+    // -- Verificar si el usuario esta activo --
     if (usuarioDB.activo === false) {
       return res.status(403).json({ error: 'Cuenta desactivada. Contacta al administrador.' });
     }
@@ -71,7 +93,7 @@ const verificarToken = async (req, res, next) => {
       institucion_id: usuarioDB.institucion_id,
     };
 
-    // Guardar en cache
+    // Guardar en cache bajo la clave unica (hash del token completo)
     tokenCache.set(tokenKey, { user: userData, expira: Date.now() + TOKEN_CACHE_TTL });
 
     req.user = userData;
@@ -119,22 +141,22 @@ const verificarPadre = (req, res, next) => {
 };
 
 // ============================================
-// VERIFICAR MISMA INSTITUCIÓN
+// VERIFICAR MISMA INSTITUCION
 // Previene que un usuario acceda a datos
-// de otra institución aunque tenga token válido
+// de otra institucion aunque tenga token valido
 // ============================================
 const verificarInstitucion = (req, res, next) => {
   const institucionReq = req.params.institucion_id || req.query.institucion_id || req.body.institucion_id;
   if (institucionReq && req.user?.institucion_id &&
       institucionReq !== req.user.institucion_id) {
-    console.warn(`🚨 Intento de acceso a otra institución — usuario: ${req.user?.email}`);
-    return res.status(403).json({ error: 'Acceso denegado. No puedes acceder a datos de otra institución.' });
+    console.warn(`🚨 Intento de acceso a otra institucion — usuario: ${req.user?.email}`);
+    return res.status(403).json({ error: 'Acceso denegado. No puedes acceder a datos de otra institucion.' });
   }
   next();
 };
 
 // ============================================
-// VERIFICAR ROL ESPECÍFICO
+// VERIFICAR ROL ESPECIFICO
 // ============================================
 const verificarRol = (rolesPermitidos) => {
   return (req, res, next) => {
@@ -153,8 +175,7 @@ const verificarRol = (rolesPermitidos) => {
 // ============================================
 const invalidarTokenCache = (token) => {
   if (token) {
-    const key = token.substring(0, 32);
-    tokenCache.delete(key);
+    tokenCache.delete(hashToken(token));
   }
 };
 
