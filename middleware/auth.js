@@ -3,21 +3,9 @@ const { supabase, supabaseAuth } = require('../config/supabase');
 
 // ============================================
 // SEGURIDAD: Cache de tokens validados
-// Evita verificar el mismo token en cada req
-// TTL 5 minutos
-//
-// FIX CRITICO: antes la clave de cache era
-// token.substring(0, 32) — los primeros 32
-// caracteres de un JWT son casi siempre el
-// header codificado (alg + typ), que es IDENTICO
-// para todos los usuarios de un mismo proyecto
-// Supabase. Eso causaba colisiones: el token de
-// un usuario podia recibir los datos cacheados
-// de OTRO usuario (incluyendo su rol e institucion).
-//
-// Ahora se usa un hash SHA-256 del token COMPLETO
-// como clave. Es unico por token, de largo fijo, y
-// ademas evita guardar el token crudo en memoria.
+// TTL 5 minutos. Clave = hash SHA-256 del token
+// completo (nunca un prefijo — ver nota historica
+// mas abajo).
 // ============================================
 const tokenCache = new Map();
 const TOKEN_CACHE_TTL = 5 * 60 * 1000;
@@ -33,20 +21,30 @@ setInterval(() => {
 
 // ============================================
 // VERIFICAR TOKEN
+//
+// FIX CRITICO (2026-08-05): antes esta funcion buscaba
+// el perfil del usuario en la tabla 'usuarios', pero esa
+// tabla es una tabla vieja/distinta — las cuentas reales
+// (admin, profesores) viven en la tabla 'profesores'.
+// Por eso CUALQUIER ruta protegida con verificarToken
+// devolvia 401 siempre, mientras que las rutas de
+// routes/admin.js (que tenian su propia logica separada
+// consultando 'profesores') si funcionaban.
+//
+// Ahora verificarToken consulta 'profesores', que es la
+// fuente de verdad real, unificando el comportamiento en
+// TODAS las rutas protegidas.
 // ============================================
 const verificarToken = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
 
-    // Validar formato del header
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ error: 'No autorizado - Token no proporcionado' });
     }
 
     const token = authHeader.split(' ')[1];
 
-    // Validar que el token no este vacio, sea demasiado corto,
-    // o no tenga la estructura basica de un JWT (header.payload.firma)
     if (!token || token.length < 20 || token.split('.').length !== 3) {
       return res.status(401).json({ error: 'Token invalido' });
     }
@@ -59,41 +57,37 @@ const verificarToken = async (req, res, next) => {
       return next();
     }
 
-    // -- Verificar con Supabase --
-    // Usa supabaseAuth (anon key), NO supabase (service_role), para
-    // validar el JWT del usuario. Mezclar service_role con auth.getUser()
-    // puede causar fallos de validacion incorrectos.
+    // -- Verificar con Supabase (cliente anon, NO service_role) --
     const { data: { user }, error } = await supabaseAuth.auth.getUser(token);
     if (error || !user) {
       return res.status(401).json({ error: 'Token invalido o expirado' });
     }
 
-    // -- Verificar en base de datos --
-    // Aqui SI se usa 'supabase' (service_role): es una lectura de datos,
-    // no una validacion de identidad, y necesita bypasear RLS.
-    const { data: usuarioDB, error: dbError } = await supabase
-      .from('usuarios')
+    // -- Verificar perfil en la tabla 'profesores' (fuente real) --
+    // Nota: se busca por id (uuid de Supabase Auth), no por email,
+    // igual que hacia routes/admin.js — es mas robusto ante cambios
+    // de email y evita ambiguedad si dos filas compartieran email.
+    const { data: perfilDB, error: perfilError } = await supabase
+      .from('profesores')
       .select('id, rol, institucion_id, activo')
-      .eq('email', user.email)
+      .eq('id', user.id)
       .single();
 
-    if (dbError || !usuarioDB) {
+    if (perfilError || !perfilDB) {
       return res.status(401).json({ error: 'Usuario no registrado en el sistema' });
     }
 
-    // -- Verificar si el usuario esta activo --
-    if (usuarioDB.activo === false) {
+    if (perfilDB.activo === false) {
       return res.status(403).json({ error: 'Cuenta desactivada. Contacta al administrador.' });
     }
 
     const userData = {
-      id:             usuarioDB.id,
+      id:             perfilDB.id,
       email:          user.email,
-      rol:            usuarioDB.rol,
-      institucion_id: usuarioDB.institucion_id,
+      rol:            perfilDB.rol,
+      institucion_id: perfilDB.institucion_id,
     };
 
-    // Guardar en cache bajo la clave unica (hash del token completo)
     tokenCache.set(tokenKey, { user: userData, expira: Date.now() + TOKEN_CACHE_TTL });
 
     req.user = userData;
@@ -142,8 +136,6 @@ const verificarPadre = (req, res, next) => {
 
 // ============================================
 // VERIFICAR MISMA INSTITUCION
-// Previene que un usuario acceda a datos
-// de otra institucion aunque tenga token valido
 // ============================================
 const verificarInstitucion = (req, res, next) => {
   const institucionReq = req.params.institucion_id || req.query.institucion_id || req.body.institucion_id;
@@ -171,7 +163,6 @@ const verificarRol = (rolesPermitidos) => {
 
 // ============================================
 // INVALIDAR TOKEN DEL CACHE
-// Llamar cuando el usuario hace logout
 // ============================================
 const invalidarTokenCache = (token) => {
   if (token) {
