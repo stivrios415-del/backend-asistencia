@@ -4,8 +4,7 @@ const { supabase, supabaseAuth } = require('../config/supabase');
 // ============================================
 // SEGURIDAD: Cache de tokens validados
 // TTL 5 minutos. Clave = hash SHA-256 del token
-// completo (nunca un prefijo — ver nota historica
-// mas abajo).
+// completo (nunca un prefijo).
 // ============================================
 const tokenCache = new Map();
 const TOKEN_CACHE_TTL = 5 * 60 * 1000;
@@ -22,18 +21,14 @@ setInterval(() => {
 // ============================================
 // VERIFICAR TOKEN
 //
-// FIX CRITICO (2026-08-05): antes esta funcion buscaba
-// el perfil del usuario en la tabla 'usuarios', pero esa
-// tabla es una tabla vieja/distinta — las cuentas reales
-// (admin, profesores) viven en la tabla 'profesores'.
-// Por eso CUALQUIER ruta protegida con verificarToken
-// devolvia 401 siempre, mientras que las rutas de
-// routes/admin.js (que tenian su propia logica separada
-// consultando 'profesores') si funcionaban.
-//
-// Ahora verificarToken consulta 'profesores', que es la
-// fuente de verdad real, unificando el comportamiento en
-// TODAS las rutas protegidas.
+// FIX (2026-08-09): este middleware es compartido por rutas de
+// profesor, admin Y padre (ej. guardar token de notificaciones push).
+// Antes SOLO buscaba el perfil en 'profesores' — correcto para
+// admin/profesor, pero causaba 401 "Usuario no registrado en el
+// sistema" para CUALQUIER padre, ya que sus cuentas viven en
+// 'usuarios' (confirmado por el flujo de registro: Auth -> usuarios
+// -> padres). Ahora, si no se encuentra en 'profesores', se intenta
+// en 'usuarios' antes de rechazar la peticion.
 // ============================================
 const verificarToken = async (req, res, next) => {
   try {
@@ -63,29 +58,51 @@ const verificarToken = async (req, res, next) => {
       return res.status(401).json({ error: 'Token invalido o expirado' });
     }
 
-    // -- Verificar perfil en la tabla 'profesores' (fuente real) --
-    // Nota: se busca por id (uuid de Supabase Auth), no por email,
-    // igual que hacia routes/admin.js — es mas robusto ante cambios
-    // de email y evita ambiguedad si dos filas compartieran email.
-    const { data: perfilDB, error: perfilError } = await supabase
+    // -- 1) Intentar como profesor/admin (tabla 'profesores') --
+    const { data: profesorDB } = await supabase
       .from('profesores')
       .select('id, rol, institucion_id, activo')
       .eq('id', user.id)
       .single();
 
-    if (perfilError || !perfilDB) {
+    let perfil = profesorDB || null;
+
+    // -- 2) Si no es profesor/admin, intentar como padre (tabla 'usuarios') --
+    // Se usa select('*') y valores por defecto tolerantes porque no
+    // conocemos con certeza todas las columnas de 'usuarios' (puede no
+    // tener institucion_id/activo) — evita que un esquema distinto
+    // rompa la autenticacion con un error 500 en vez de simplemente
+    // no encontrar coincidencia.
+    if (!perfil) {
+      const { data: usuarioDB } = await supabase
+        .from('usuarios')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+
+      if (usuarioDB) {
+        perfil = {
+          id: usuarioDB.id,
+          rol: usuarioDB.rol || 'padre',
+          institucion_id: usuarioDB.institucion_id ?? null,
+          activo: usuarioDB.activo !== false,
+        };
+      }
+    }
+
+    if (!perfil) {
       return res.status(401).json({ error: 'Usuario no registrado en el sistema' });
     }
 
-    if (perfilDB.activo === false) {
+    if (perfil.activo === false) {
       return res.status(403).json({ error: 'Cuenta desactivada. Contacta al administrador.' });
     }
 
     const userData = {
-      id:             perfilDB.id,
+      id:             perfil.id,
       email:          user.email,
-      rol:            perfilDB.rol,
-      institucion_id: perfilDB.institucion_id,
+      rol:            perfil.rol,
+      institucion_id: perfil.institucion_id,
     };
 
     tokenCache.set(tokenKey, { user: userData, expira: Date.now() + TOKEN_CACHE_TTL });
