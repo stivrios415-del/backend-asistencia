@@ -51,7 +51,7 @@ const enviarEmail = async (emailDestino, nombrePadre, nombreEstudiante, tipo, me
     const dominioVerificado = process.env.RESEND_FROM_DOMAIN;
     const emailReal = dominioVerificado
       ? emailDestino                          // dominio verificado → email del padre
-      : (process.env.RESEND_SANDBOX_EMAIL || 'stivrios415@gmail.com'); // sandbox → tu email
+      : (process.env.RESEND_SANDBOX_EMAIL || 'cesar05hn@yahoo.com'); // sandbox → tu email
 
     const fromEmail = dominioVerificado
       ? `Asistencia Escolar <noreply@${dominioVerificado}>`
