@@ -1,8 +1,33 @@
 const { supabase } = require('../config/supabase');
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 
-const resend = new Resend(process.env.RESEND_API_KEY);
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
+
+// ============================================
+// EMAIL VIA BREVO (SMTP relay) — reemplaza a Resend
+//
+// A diferencia de Resend, el plan gratuito de Brevo NO restringe a
+// quien le puede llegar el correo — solo pide verificar el correo
+// remitente (un clic en un link, sin dominio propio ni DNS). Desde
+// ahi se puede enviar a cualquier padre real, hasta 300 correos/dia
+// gratis.
+//
+// Variables de entorno necesarias en Render:
+//   BREVO_SMTP_USER  -> tu correo de login en Brevo
+//   BREVO_SMTP_PASS  -> la SMTP Key generada en el dashboard de Brevo
+//                       (Settings -> SMTP & API), NO tu contraseña normal
+//   EMAIL_FROM       -> el correo remitente YA VERIFICADO en Brevo
+//                       (Senders, Domains & Dedicated IPs -> Senders)
+// ============================================
+const transporter = nodemailer.createTransport({
+  host: 'smtp-relay.brevo.com',
+  port: 587,
+  secure: false, // usa STARTTLS en el puerto 587
+  auth: {
+    user: process.env.BREVO_SMTP_USER,
+    pass: process.env.BREVO_SMTP_PASS,
+  },
+});
 
 // ============================================
 // PUSH NOTIFICATION VIA EXPO
@@ -34,36 +59,23 @@ const enviarPush = async (expoPushToken, titulo, mensaje, data = {}) => {
 };
 
 // ============================================
-// EMAIL VIA RESEND
-// ── En sandbox solo puede enviar al email del dueño de la API key.
-// ── Cuando verifiques un dominio en resend.com/domains, pon el dominio
-//    en RESEND_FROM_DOMAIN y los emails irán al padre real.
+// EMAIL VIA BREVO
+// ── Ya NO hay redireccion a un solo correo — cada padre recibe el
+//    suyo directamente, sin necesidad de dominio verificado.
 // ============================================
 const enviarEmail = async (emailDestino, nombrePadre, nombreEstudiante, tipo, mensajeHtml) => {
-  if (!process.env.RESEND_API_KEY || !emailDestino) return false;
+  if (!process.env.BREVO_SMTP_USER || !process.env.BREVO_SMTP_PASS || !emailDestino) return false;
   try {
     const emojis  = { falta: '⚠️', tardanza: '🕐', muchas_ausencias: '🔴', asistencia: '✅' };
     const colores = { falta: '#F59E0B', tardanza: '#3B82F6', muchas_ausencias: '#EF4444', asistencia: '#10B981' };
     const emoji   = emojis[tipo]  || '📢';
     const color   = colores[tipo] || '#143C65';
 
-    // ── Sandbox: si no hay dominio verificado, mandar al email del owner ──
-    const dominioVerificado = process.env.RESEND_FROM_DOMAIN;
-    const emailReal = dominioVerificado
-      ? emailDestino                          // dominio verificado → email del padre
-      : (process.env.RESEND_SANDBOX_EMAIL || 'cesar05hn@yahoo.com'); // sandbox → tu email
+    const fromEmail = process.env.EMAIL_FROM || process.env.BREVO_SMTP_USER;
 
-    const fromEmail = dominioVerificado
-      ? `Asistencia Escolar <noreply@${dominioVerificado}>`
-      : (process.env.EMAIL_FROM || 'onboarding@resend.dev');
-
-    if (!dominioVerificado) {
-      console.log(`📧 Sandbox: email redirigido de ${emailDestino} → ${emailReal}`);
-    }
-
-    const { error } = await resend.emails.send({
-      from: fromEmail,
-      to: emailReal,
+    await transporter.sendMail({
+      from: `"Asistencia Escolar" <${fromEmail}>`,
+      to: emailDestino,
       subject: `${emoji} Notificación de asistencia — ${nombreEstudiante}`,
       html: `
         <!DOCTYPE html><html>
@@ -87,13 +99,6 @@ const enviarEmail = async (emailDestino, nombrePadre, nombreEstudiante, tipo, me
                     <p style="font-size:16px;color:#333;margin-top:0;">
                       Estimado/a <strong>${nombrePadre}</strong>,
                     </p>
-                    ${!dominioVerificado ? `
-                    <div style="background:#FFF3CD;border-left:4px solid #F59E0B;padding:12px;border-radius:6px;margin-bottom:16px;">
-                      <p style="margin:0;font-size:13px;color:#856404;">
-                        📬 Esta notificación corresponde al padre/madre de <strong>${nombreEstudiante}</strong>
-                        (${emailDestino}) — modo sandbox activo.
-                      </p>
-                    </div>` : ''}
                     <div style="background:#FFF8E1;border-left:4px solid ${color};padding:16px;border-radius:6px;margin:16px 0;">
                       <p style="margin:0;font-size:15px;color:#333;line-height:1.6;">${mensajeHtml}</p>
                     </div>
@@ -115,11 +120,10 @@ const enviarEmail = async (emailDestino, nombrePadre, nombreEstudiante, tipo, me
       `
     });
 
-    if (error) { console.error('❌ Resend:', error.message); return false; }
-    console.log(`📧 Email ✅ → ${emailReal}${!dominioVerificado ? ' (sandbox)' : ''}`);
+    console.log(`📧 Email ✅ → ${emailDestino}`);
     return true;
   } catch (error) {
-    console.error('❌ Error email:', error.message);
+    console.error('❌ Error email (Brevo):', error.message);
     return false;
   }
 };
