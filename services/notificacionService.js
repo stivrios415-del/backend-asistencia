@@ -1,7 +1,7 @@
 const { supabase } = require('../config/supabase');
-const nodemailer = require('nodemailer');
 
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
+const BREVO_API_URL = 'https://api.brevo.com/v3/smtp/email';
 
 // ============================================
 // EMAIL VIA BREVO (SMTP relay) — reemplaza a Resend
@@ -29,6 +29,23 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// ============================================
+// EMAIL VIA BREVO — API HTTP (NO SMTP)
+//
+// FIX (2026-08-10): Render bloquea el trafico saliente por los
+// puertos SMTP (25, 465, 587) en el plan gratuito desde septiembre
+// de 2025 — por eso nodemailer siempre daba "Connection timeout",
+// sin importar que las credenciales estuvieran bien. La API HTTP
+// de Brevo usa el puerto 443 (HTTPS normal), que NO esta bloqueado,
+// asi que evita el problema por completo sin necesidad de pagar
+// un plan superior en Render.
+//
+// Variables de entorno necesarias en Render:
+//   BREVO_API_KEY -> API key generada en Brevo (SMTP & API -> API Keys,
+//                    NO la pestaña de SMTP)
+//   EMAIL_FROM    -> el correo remitente YA VERIFICADO en Brevo
+//                    (Senders, Domains & Dedicated IPs -> Senders)
+// ============================================
 // ============================================
 // PUSH NOTIFICATION VIA EXPO
 // ============================================
@@ -59,25 +76,30 @@ const enviarPush = async (expoPushToken, titulo, mensaje, data = {}) => {
 };
 
 // ============================================
-// EMAIL VIA BREVO
-// ── Ya NO hay redireccion a un solo correo — cada padre recibe el
-//    suyo directamente, sin necesidad de dominio verificado.
+// EMAIL VIA BREVO (API HTTP — no SMTP)
 // ============================================
 const enviarEmail = async (emailDestino, nombrePadre, nombreEstudiante, tipo, mensajeHtml) => {
-  if (!process.env.BREVO_SMTP_USER || !process.env.BREVO_SMTP_PASS || !emailDestino) return false;
+  if (!process.env.BREVO_API_KEY) {
+    console.error('❌ Email NO enviado — falta BREVO_API_KEY en las variables de entorno de Render.');
+    return false;
+  }
+  if (!emailDestino) {
+    console.warn('⚠️ Email NO enviado — el padre no tiene correo registrado.');
+    return false;
+  }
   try {
     const emojis  = { falta: '⚠️', tardanza: '🕐', muchas_ausencias: '🔴', asistencia: '✅' };
     const colores = { falta: '#F59E0B', tardanza: '#3B82F6', muchas_ausencias: '#EF4444', asistencia: '#10B981' };
     const emoji   = emojis[tipo]  || '📢';
     const color   = colores[tipo] || '#143C65';
 
-    const fromEmail = process.env.EMAIL_FROM || process.env.BREVO_SMTP_USER;
+    const fromEmail = process.env.EMAIL_FROM;
+    if (!fromEmail) {
+      console.error('❌ Email NO enviado — falta EMAIL_FROM en las variables de entorno de Render.');
+      return false;
+    }
 
-    await transporter.sendMail({
-      from: `"Asistencia Escolar" <${fromEmail}>`,
-      to: emailDestino,
-      subject: `${emoji} Notificación de asistencia — ${nombreEstudiante}`,
-      html: `
+    const htmlContent = `
         <!DOCTYPE html><html>
         <body style="margin:0;padding:0;background:#f4f4f4;font-family:Arial,sans-serif;">
           <table width="100%" cellpadding="0" cellspacing="0">
@@ -117,13 +139,33 @@ const enviarEmail = async (emailDestino, nombrePadre, nombreEstudiante, tipo, me
             </td></tr>
           </table>
         </body></html>
-      `
+      `;
+
+    const response = await fetch(BREVO_API_URL, {
+      method: 'POST',
+      headers: {
+        'accept': 'application/json',
+        'api-key': process.env.BREVO_API_KEY,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        sender: { name: 'Asistencia Escolar', email: fromEmail },
+        to: [{ email: emailDestino, name: nombrePadre }],
+        subject: `${emoji} Notificación de asistencia — ${nombreEstudiante}`,
+        htmlContent,
+      }),
     });
+
+    if (!response.ok) {
+      const errBody = await response.text();
+      console.error(`❌ Error email (Brevo API) [${response.status}]:`, errBody);
+      return false;
+    }
 
     console.log(`📧 Email ✅ → ${emailDestino}`);
     return true;
   } catch (error) {
-    console.error('❌ Error email (Brevo):', error.message);
+    console.error('❌ Error email (Brevo API):', error.message);
     return false;
   }
 };
