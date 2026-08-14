@@ -4,32 +4,6 @@ const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 const BREVO_API_URL = 'https://api.brevo.com/v3/smtp/email';
 
 // ============================================
-// EMAIL VIA BREVO (SMTP relay) — reemplaza a Resend
-//
-// A diferencia de Resend, el plan gratuito de Brevo NO restringe a
-// quien le puede llegar el correo — solo pide verificar el correo
-// remitente (un clic en un link, sin dominio propio ni DNS). Desde
-// ahi se puede enviar a cualquier padre real, hasta 300 correos/dia
-// gratis.
-//
-// Variables de entorno necesarias en Render:
-//   BREVO_SMTP_USER  -> tu correo de login en Brevo
-//   BREVO_SMTP_PASS  -> la SMTP Key generada en el dashboard de Brevo
-//                       (Settings -> SMTP & API), NO tu contraseña normal
-//   EMAIL_FROM       -> el correo remitente YA VERIFICADO en Brevo
-//                       (Senders, Domains & Dedicated IPs -> Senders)
-// ============================================
-const transporter = nodemailer.createTransport({
-  host: 'smtp-relay.brevo.com',
-  port: 587,
-  secure: false, // usa STARTTLS en el puerto 587
-  auth: {
-    user: process.env.BREVO_SMTP_USER,
-    pass: process.env.BREVO_SMTP_PASS,
-  },
-});
-
-// ============================================
 // EMAIL VIA BREVO — API HTTP (NO SMTP)
 //
 // FIX (2026-08-10): Render bloquea el trafico saliente por los
