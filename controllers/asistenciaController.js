@@ -234,37 +234,119 @@ const registrarAsistencia = async (req, res) => {
   } catch (e) { console.error('Error verificando tardanza:', e.message); }
 };
 
-// ========== ASISTENCIA DEL DÍA ==========
+// ========== ASISTENCIA DEL DÍA (con filtro opcional por materia) ==========
 const getAsistenciaHoy = async (req, res) => {
   const hoy = fechaHondurasHoy();
   const añoActual = new Date().getFullYear();
   const mesActual = new Date().getMonth() + 1;
-  const { profesorEmail } = req.query;
+  const { profesorEmail, materiaId } = req.query; // ← ahora acepta materiaId
   const institucion_id = req.user.institucion_id;
+
   if (!profesorEmail) return res.status(400).json({ error: 'Se necesita el email del profesor' });
+
   const { data: profesor, error: errProf } = await supabase.from('profesores').select('id').eq('email', profesorEmail).single();
   if (errProf || !profesor) return res.status(404).json({ error: 'Profesor no encontrado' });
+
   let queryMaterias = supabase.from('materias').select('id').eq('profesor_id', profesor.id);
   if (institucion_id) queryMaterias = queryMaterias.eq('institucion_id', institucion_id);
+  if (materiaId) queryMaterias = queryMaterias.eq('id', materiaId); // ← filtro por materia
+
   const { data: materias } = await queryMaterias;
   if (!materias || materias.length === 0) return res.json([]);
+
   let queryAsistencia = supabase.from('asistencia').select(`
     id, fecha, hora, materia_id, estado,
     estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url),
     materias (nombre)
   `).eq('fecha', hoy).in('materia_id', materias.map(m => m.id));
+
   if (institucion_id) queryAsistencia = queryAsistencia.eq('institucion_id', institucion_id);
+
   const { data, error } = await queryAsistencia;
   if (error) return res.status(400).json({ error: error.message });
+
   const result = await Promise.all(data.map(async item => ({
-    id: item.id, fecha: item.fecha, hora: item.hora, estado: item.estado || 'presente',
+    ...item,
     estudiante: item.estudiantes,
     materia_nombre: item.materias?.nombre || 'Sin materia',
     faltasEnMes: item.estudiantes?.cedula ? await contarFaltasEnMes(item.estudiantes.cedula, añoActual, mesActual) : 0
   })));
+
   res.json(result);
 };
 
+// ========== NUEVO: OBTENER ESTUDIANTES DE UNA MATERIA CON SU ESTADO DE ASISTENCIA DE HOY ==========
+// GET /api/asistencia/estudiantes-materia?materiaId=xxx&profesorEmail=yyy
+const getEstudiantesMateriaConEstado = async (req, res) => {
+  const { materiaId, profesorEmail } = req.query;
+  const institucion_id = req.user.institucion_id;
+  const hoy = fechaHondurasHoy();
+
+  if (!materiaId || !profesorEmail) {
+    return res.status(400).json({ error: 'Se requieren materiaId y profesorEmail' });
+  }
+
+  try {
+    // 1. Verificar que la materia existe y pertenece al profesor
+    const { data: profesor } = await supabase
+      .from('profesores')
+      .select('id')
+      .eq('email', profesorEmail.trim())
+      .single();
+
+    if (!profesor) {
+      return res.status(404).json({ error: 'Profesor no encontrado' });
+    }
+
+    const { data: materia, error: errMat } = await supabase
+      .from('materias')
+      .select('id, grado, carrera, nombre')
+      .eq('id', materiaId)
+      .eq('profesor_id', profesor.id)
+      .single();
+
+    if (errMat || !materia) {
+      return res.status(404).json({ error: 'Materia no encontrada o no pertenece al profesor' });
+    }
+
+    // 2. Obtener todos los estudiantes de ese grado y carrera (normalizando tildes)
+    const normalizar = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+    const carreraNorm = normalizar(materia.carrera);
+
+    let qEst = supabase.from('estudiantes')
+      .select('cedula, nombre, apellido, grado, seccion, carrera, foto_url')
+      .eq('grado', materia.grado);
+    if (institucion_id) qEst = qEst.eq('institucion_id', institucion_id);
+
+    const { data: estudiantes } = await qEst;
+    const estudiantesFiltrados = (estudiantes || []).filter(e => normalizar(e.carrera) === carreraNorm);
+
+    // 3. Obtener las asistencias de hoy para esta materia
+    const { data: asistenciasHoy } = await supabase
+      .from('asistencia')
+      .select('cedula, estado, hora')
+      .eq('fecha', hoy)
+      .eq('materia_id', materiaId);
+
+    const asistenciaMap = {};
+    (asistenciasHoy || []).forEach(a => {
+      asistenciaMap[a.cedula] = { estado: a.estado || 'presente', hora: a.hora };
+    });
+
+    // 4. Armar la respuesta con estado
+    const resultado = estudiantesFiltrados.map(est => ({
+      ...est,
+      asistencia: asistenciaMap[est.cedula] || { estado: 'ausente', hora: null }
+    }));
+
+    res.json(resultado);
+  } catch (error) {
+    console.error('❌ Error en getEstudiantesMateriaConEstado:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// ========== RESTO DE FUNCIONES EXISTENTES (sin cambios) ==========
 const getAsistenciaByFecha = async (req, res) => {
   const { fecha } = req.params; const institucion_id = req.user.institucion_id;
   let query = supabase.from('asistencia').select(`id, fecha, hora, estado, estudiantes (cedula, nombre, apellido, grado, seccion, carrera, foto_url)`).eq('fecha', fecha);
@@ -310,7 +392,6 @@ const getReporteAsistencia = async (req, res) => {
   if (institucion_id) query = query.eq('institucion_id', institucion_id);
   const { data, error } = await query.order('fecha', { ascending: false });
   if (error) return res.status(400).json({ error: error.message });
-  // Incluir estado en la respuesta para mostrar excusados en la lista
   res.json(data.map(item => ({
     ...item,
     materia_nombre: item.materias?.nombre || 'Sin materia',
@@ -318,7 +399,6 @@ const getReporteAsistencia = async (req, res) => {
   })));
 };
 
-// ========== EXPORTAR EXCEL SIMPLE ==========
 const exportarReporteExcel = async (req, res) => {
   const { fechaInicio, fechaFin, usuario } = req.query; const institucion_id = req.user.institucion_id;
   if (!fechaInicio || !fechaFin) return res.status(400).json({ error: 'Debe proporcionar fechaInicio y fechaFin' });
@@ -374,7 +454,6 @@ const exportarReporteExcel = async (req, res) => {
   res.json({ success: true, url: urlData.publicUrl });
 };
 
-// ========== EXPORTAR REPORTE COMPLETO POR CLASE (CON EXCUSADOS) ==========
 const exportarReporteCompletoExcel = async (req, res) => {
   const { fecha, usuario, nombreProfesor, grado, seccion, profesorEmail } = req.query;
   const institucion_id = req.user.institucion_id;
@@ -390,7 +469,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
     const { data: u } = supabase.storage.from('reportes').getPublicUrl(fn); return u.publicUrl;
   };
   try {
-    // ── Query incluye estado para detectar excusados ──
     let queryAsistencias = supabase.from('asistencia').select(`
       cedula, hora, materia_id, estado,
       estudiantes (cedula, nombre, apellido, grado, seccion, carrera),
@@ -401,7 +479,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
     if (filtrarPorProfesor) {
       const idsMaterias = await obtenerIdsMateriaProfesor(profesorEmail, institucion_id);
       if (!idsMaterias || idsMaterias.length === 0) { const url = await subirExcelVacio('No hay asistencias para este profesor en esta fecha.'); return res.json({ success: true, url }); }
-      // Incluye registros de las materias del profesor (presentes Y excusados)
       queryAsistencias = queryAsistencias.in('materia_id', idsMaterias);
     }
     if (grado) queryAsistencias = queryAsistencias.filter('materias.grado', 'eq', grado);
@@ -409,7 +486,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
     const { data: asistencias, error: errAsistencias } = await queryAsistencias;
     if (errAsistencias) throw errAsistencias;
 
-    // ── Agrupar presentes y excusados por materia ──
     const grupos = new Map();
     asistencias.forEach(asis => {
       const materia = asis.materias; if (!materia) return;
@@ -417,11 +493,9 @@ const exportarReporteCompletoExcel = async (req, res) => {
       grupos.get(materia.id).asistencias.push({ estudiante: asis.estudiantes, hora: asis.hora, estado: asis.estado || 'presente' });
     });
 
-    // ── Agregar ausentes a cada grupo ──
     const norm = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
     for (const [materiaId, grupo] of grupos) {
       const mat = grupo.materia;
-      // Obtener todos los estudiantes del grado/carrera de esta materia
       let qEst = supabase.from('estudiantes')
         .select('cedula, nombre, apellido, grado, seccion, carrera')
         .eq('grado', mat.grado);
@@ -434,7 +508,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
       ausentes.forEach(est => {
         grupo.asistencias.push({ estudiante: est, hora: null, estado: 'ausente' });
       });
-      // Ordenar: presentes primero, luego excusados, luego ausentes
       grupo.asistencias.sort((a, b) => {
         const orden = { presente: 0, excusado: 1, ausente: 2 };
         return (orden[a.estado] || 0) - (orden[b.estado] || 0);
@@ -473,7 +546,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
     if (grupos.size === 0) {
       worksheet.addRow(['No se registraron asistencias en esta fecha.']);
     } else {
-      // ── RESUMEN DE CLASES ──
       worksheet.mergeCells(`A${currentRow}:I${currentRow}`);
       worksheet.getCell(`A${currentRow}`).value = 'RESUMEN DE CLASES';
       worksheet.getCell(`A${currentRow}`).font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
@@ -513,7 +585,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
       currentRow++;
       worksheet.addRow([]); currentRow++; worksheet.addRow([]); currentRow++;
 
-      // ── DETALLE POR CLASE ──
       const gruposOrdenados = Array.from(grupos.values()).sort((a, b) => {
         if (a.materia.grado !== b.materia.grado) return String(a.materia.grado).localeCompare(String(b.materia.grado));
         return String(a.materia.seccion).localeCompare(String(b.materia.seccion));
@@ -607,7 +678,6 @@ const getEstadisticas = async (req, res) => {
       if (institucion_id) q = q.eq('institucion_id', institucion_id);
       const { data } = await q; asistencias = data || [];
     }
-    // Excusados cuentan como presentes para las estadísticas
     const asistenciaCount = {};
     asistencias.forEach(a => { asistenciaCount[a.cedula] = (asistenciaCount[a.cedula] || 0) + 1; });
     const totalDias = Math.ceil((new Date(fin) - new Date(inicio)) / 86400000) + 1;
@@ -629,7 +699,6 @@ const getEstadisticas = async (req, res) => {
   } catch (error) { console.error('❌ Error estadísticas:', error); res.status(500).json({ error: error.message }); }
 };
 
-// ========== EXPORTAR ESTADÍSTICAS A EXCEL ==========
 const exportarEstadisticasExcel = async (req, res) => {
   try {
     const { fechaInicio, fechaFin, profesorEmail } = req.query; const institucion_id = req.user.institucion_id;
@@ -707,11 +776,9 @@ const finalizarClase = async (req, res) => {
     if (errMat || !materia) return res.status(404).json({ error: 'Materia no encontrada' });
 
     // 2. Todos los estudiantes del grado/carrera
-    // Normalizar carrera: quitar tildes y comparar en minúsculas
     const normalizarTextoLocal = (str) => (str || '').toLowerCase()
       .normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
 
-    // Obtener todos los estudiantes del grado y filtrar por carrera normalizando tildes
     let qEst = supabase.from('estudiantes')
       .select('cedula, nombre, apellido, carrera')
       .eq('grado', materia.grado);
@@ -763,10 +830,19 @@ const finalizarClase = async (req, res) => {
   }
 };
 
+// ========== EXPORTACIONES ==========
 module.exports = {
-  registrarAsistencia, finalizarClase,
-  getAsistenciaHoy, getAsistenciaByFecha, getAsistenciaPorGrado,
-  limpiarAsistenciaHoy, getReporteAsistencia,
-  exportarReporteExcel, exportarReporteCompletoExcel, getReportesGenerados,
-  getEstadisticas, exportarEstadisticasExcel
+  registrarAsistencia,
+  finalizarClase,
+  getAsistenciaHoy,
+  getAsistenciaByFecha,
+  getAsistenciaPorGrado,
+  limpiarAsistenciaHoy,
+  getReporteAsistencia,
+  exportarReporteExcel,
+  exportarReporteCompletoExcel,
+  getReportesGenerados,
+  getEstadisticas,
+  exportarEstadisticasExcel,
+  getEstudiantesMateriaConEstado // ← NUEVA FUNCIÓN EXPORTADA
 };
