@@ -6,8 +6,6 @@ const { notificarTardanza, notificarAsistencia, notificarFaltaClase } = require(
 const HORA_LIMITE_TARDANZA = '07:30';
 const ZONA_HORARIA = 'America/Tegucigalpa';
 
-// ========== HELPER: fecha y hora en horario de Honduras ==========
-// en-CA devuelve directamente el formato YYYY-MM-DD, ideal para comparar/guardar en Supabase
 function fechaHondurasHoy() {
   return new Date().toLocaleDateString('en-CA', { timeZone: ZONA_HORARIA });
 }
@@ -198,6 +196,25 @@ async function obtenerEstudiantesFiltrados(filtros, institucion_id) {
 }
 
 // ========== REGISTRAR ASISTENCIA ==========
+// ✅ FIX (duplicados): antes se hacía un "select" para ver si ya existía
+// el registro, y SOLO SI NO EXISTÍA se insertaba (check-then-insert).
+// Esas dos operaciones no son atómicas: si llegaban varias peticiones
+// casi al mismo tiempo para el mismo estudiante (doble tap del profesor,
+// o el interceptor de axios reintentando la petición original tras
+// refrescar el token), TODAS pasaban el chequeo "yaRegistro" antes de
+// que cualquiera terminara de insertar, y cada una insertaba su propio
+// registro y disparaba su propia notificación — de ahí las notificaciones
+// duplicadas ("Llegada tarde" x4, etc).
+//
+// Ahora ya NO se hace el select previo: se inserta directo, confiando en
+// la restricción única de la base de datos (cedula + fecha + materia_id).
+// Si la restricción existe, solo UNA petición logra insertar; las demás
+// reciben el error de restricción única (código 23505 en Postgres) y se
+// responde con el mismo mensaje de "ya registró asistencia" de antes.
+//
+// ⚠️ Requiere la migración SQL del comentario al inicio del archivo:
+//   ALTER TABLE asistencia ADD CONSTRAINT unico_cedula_fecha_materia
+//   UNIQUE (cedula, fecha, materia_id);
 const registrarAsistencia = async (req, res) => {
   const { cedula, materiaId } = req.body;
   const institucion_id = req.user.institucion_id;
@@ -214,12 +231,22 @@ const registrarAsistencia = async (req, res) => {
   }
   const hoy = fechaHondurasHoy();
   const ahora = horaHondurasAhora();
-  const { data: yaRegistro } = await supabase.from('asistencia').select('id')
-    .eq('cedula', cedula).eq('fecha', hoy).eq('materia_id', materiaId).maybeSingle();
-  if (yaRegistro) return res.status(400).json({ error: 'Este estudiante ya registró asistencia en esta clase hoy', estudiante });
+
+  // ── Insert directo (sin select previo) — la restricción única de la
+  // base de datos es la que realmente evita el duplicado ──
   const { error: errAsistencia } = await supabase.from('asistencia')
     .insert([{ cedula, fecha: hoy, hora: ahora, materia_id: materiaId, institucion_id, estado: 'presente' }]);
-  if (errAsistencia) return res.status(500).json({ error: 'Error al registrar asistencia: ' + errAsistencia.message });
+
+  if (errAsistencia) {
+    // 23505 = violación de restricción única en Postgres/Supabase.
+    // Significa que otra petición (o esta misma, reintentada) ya
+    // insertó el registro una fracción de segundo antes.
+    if (errAsistencia.code === '23505') {
+      return res.status(400).json({ error: 'Este estudiante ya registró asistencia en esta clase hoy', estudiante });
+    }
+    return res.status(500).json({ error: 'Error al registrar asistencia: ' + errAsistencia.message });
+  }
+
   res.json({
     message: 'Asistencia registrada exitosamente',
     estudiante: { cedula: estudiante.cedula, nombre: estudiante.nombre, apellido: estudiante.apellido, grado: estudiante.grado, seccion: estudiante.seccion, carrera: estudiante.carrera || 'No especificada', foto_url: estudiante.foto_url || null },
@@ -693,6 +720,24 @@ const exportarEstadisticasExcel = async (req, res) => {
 };
 
 // ========== FINALIZAR CLASE ==========
+// ✅ FIX (duplicados): antes esta función no tenía ninguna protección
+// contra ejecutarse dos veces para la misma clase. Si el botón
+// "Finalizar clase" no se deshabilitaba mientras esperaba la respuesta
+// (o el profesor le daba doble tap), el frontend disparaba dos
+// peticiones, y cada una recorría TODOS los estudiantes del grado/
+// carrera y volvía a notificar a cada padre — de ahí que "Asistencia
+// registrada" y "Ausencia en clase" llegaran exactamente 2 veces, con
+// la misma hora.
+//
+// Ahora, antes de notificar a nadie, se intenta insertar un registro
+// único en la tabla "clases_finalizadas" (materia_id + fecha). Si el
+// insert tiene éxito, es la primera vez que se finaliza esa clase hoy
+// y se sigue el flujo normal. Si falla por violación de restricción
+// única (23505), significa que esta clase YA fue finalizada — se
+// responde de inmediato sin volver a notificar a nadie.
+//
+// ⚠️ Requiere la migración SQL del comentario al inicio del archivo
+// (tabla clases_finalizadas con UNIQUE (materia_id, fecha)).
 const finalizarClase = async (req, res) => {
   const { materiaId, nombreProfesor, nombreMateria } = req.body;
   const institucion_id = req.user.institucion_id;
@@ -700,6 +745,26 @@ const finalizarClase = async (req, res) => {
 
   try {
     const hoy = fechaHondurasHoy();
+
+    // ── Candado contra doble finalización de la misma clase el mismo día ──
+    const { error: errCandado } = await supabase
+      .from('clases_finalizadas')
+      .insert([{ materia_id: materiaId, fecha: hoy, institucion_id }]);
+
+    if (errCandado) {
+      if (errCandado.code === '23505') {
+        // Esta clase ya fue finalizada antes hoy — no se vuelve a notificar.
+        return res.status(200).json({
+          success: true,
+          yaFinalizada: true,
+          mensaje: 'Esta clase ya había sido finalizada hoy. No se enviaron notificaciones nuevamente.'
+        });
+      }
+      // Si la tabla de candado falla por otra razón, no arriesgamos
+      // notificaciones duplicadas: se corta aquí y se reporta el error.
+      console.error('❌ Error verificando candado de finalizarClase:', errCandado.message);
+      return res.status(500).json({ error: 'No se pudo verificar el estado de la clase: ' + errCandado.message });
+    }
 
     // 1. Datos de la materia
     const { data: materia, error: errMat } = await supabase
