@@ -7,6 +7,7 @@ router.use(verificarProfesor);
 
 router.post('/',                          asistenciaController.registrarAsistencia);
 router.post('/finalizar-clase',           asistenciaController.finalizarClase);
+router.post('/sync-batch',                asistenciaController.sincronizarAsistenciaBatch); // ← nueva
 router.get('/hoy',                        asistenciaController.getAsistenciaHoy);
 router.get('/fecha/:fecha',               asistenciaController.getAsistenciaByFecha);
 router.get('/reporte/grado',              asistenciaController.getAsistenciaPorGrado);
