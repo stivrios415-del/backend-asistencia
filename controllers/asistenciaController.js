@@ -828,8 +828,49 @@ const finalizarClase = async (req, res) => {
   }
 };
 
+// ========== SINCRONIZAR ASISTENCIA OFFLINE (BATCH) ==========
+// Inserta registros capturados sin conexión, respetando la fecha/hora
+// ORIGINAL de cuando se pasó lista (no la hora de cuando sincroniza).
+// El constraint único (cedula, fecha, materia_id) evita duplicados si
+// se sincroniza dos veces por una reconexión intermitente.
+const sincronizarAsistenciaBatch = async (req, res) => {
+  const { registros } = req.body;
+  const institucion_id = req.user.institucion_id;
+
+  if (!Array.isArray(registros) || registros.length === 0) {
+    return res.json({ success: true, exitosos: [], duplicados: [], fallidos: [] });
+  }
+
+  const exitosos = [];
+  const duplicados = [];
+  const fallidos = [];
+
+  for (const r of registros) {
+    if (!r.id || !r.cedula || !r.materiaId || !r.fecha || !r.hora) {
+      fallidos.push({ id: r.id, error: 'Registro incompleto' });
+      continue;
+    }
+    try {
+      const { error } = await supabase.from('asistencia').insert([{
+        cedula: r.cedula, materia_id: r.materiaId, fecha: r.fecha, hora: r.hora,
+        institucion_id, estado: 'presente',
+      }]);
+      if (error) {
+        if (error.code === '23505') duplicados.push(r.id);
+        else fallidos.push({ id: r.id, error: error.message });
+        continue;
+      }
+      exitosos.push(r.id);
+    } catch (e) {
+      fallidos.push({ id: r.id, error: e.message });
+    }
+  }
+
+  res.json({ success: true, exitosos, duplicados, fallidos });
+};
+
 module.exports = {
-  registrarAsistencia, finalizarClase,
+  registrarAsistencia, finalizarClase, sincronizarAsistenciaBatch, // ← agregado
   getAsistenciaHoy, getAsistenciaByFecha, getAsistenciaPorGrado,
   limpiarAsistenciaHoy, getReporteAsistencia,
   exportarReporteExcel, exportarReporteCompletoExcel, getReportesGenerados,
