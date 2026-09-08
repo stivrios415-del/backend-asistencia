@@ -869,10 +869,41 @@ const sincronizarAsistenciaBatch = async (req, res) => {
   res.json({ success: true, exitosos, duplicados, fallidos });
 };
 
+// ========== ROSTER DE ESTUDIANTES POR MATERIA (para caché offline) ==========
+// Usado por la app para descargar, mientras hay internet, la lista de
+// estudiantes que pertenecen a una clase — así el profesor puede seguir
+// pasando asistencia sin conexión más adelante.
+const getRosterPorMateria = async (req, res) => {
+  const { materiaId } = req.params;
+  const institucion_id = req.user.institucion_id;
+  if (!materiaId) return res.status(400).json({ error: 'Falta materiaId' });
+
+  try {
+    const { data: materia, error: errMateria } = await supabase
+      .from('materias').select('grado, carrera').eq('id', materiaId).single();
+    if (errMateria || !materia) return res.status(404).json({ error: 'Materia no encontrada' });
+
+    let qEst = supabase.from('estudiantes')
+      .select('cedula, nombre, apellido, grado, seccion, carrera, foto_url')
+      .eq('grado', materia.grado);
+    if (institucion_id) qEst = qEst.eq('institucion_id', institucion_id);
+    const { data: todosEst, error: errEst } = await qEst;
+    if (errEst) throw errEst;
+
+    const carreraNorm = normalizarTexto(materia.carrera);
+    const roster = (todosEst || []).filter(e => normalizarTexto(e.carrera) === carreraNorm);
+
+    res.json(roster);
+  } catch (error) {
+    console.error('❌ getRosterPorMateria:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+};
+
 module.exports = {
   registrarAsistencia, finalizarClase, sincronizarAsistenciaBatch, // ← agregado
   getAsistenciaHoy, getAsistenciaByFecha, getAsistenciaPorGrado,
-  limpiarAsistenciaHoy, getReporteAsistencia,
+  limpiarAsistenciaHoy, getReporteAsistencia,getRosterPorMateria,
   exportarReporteExcel, exportarReporteCompletoExcel, getReportesGenerados,
   getEstadisticas, exportarEstadisticasExcel
 };
