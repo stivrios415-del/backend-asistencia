@@ -75,6 +75,8 @@ const origenesPermitidos = [
   'https://backend-asistencia-nhny.onrender.com',
   'exp://',       // Expo Go
   'kairos://',    // Deep link de la app
+  'http://localhost:5173',          // desarrollo web
+  'https://TU-DOMINIO-WEB.vercel.app',
 ];
 
 app.use(cors({
