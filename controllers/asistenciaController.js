@@ -284,7 +284,8 @@ const getAsistenciaHoy = async (req, res) => {
   const { data, error } = await queryAsistencia;
   if (error) return res.status(400).json({ error: error.message });
   const result = await Promise.all(data.map(async item => ({
-    id: item.id, fecha: item.fecha, hora: item.hora, estado: item.estado || 'presente',
+   id: item.id, fecha: item.fecha, hora: item.hora, estado: item.estado || 'presente',
+materia_id: item.materia_id, // ← nueva
     estudiante: item.estudiantes,
     materia_nombre: item.materias?.nombre || 'Sin materia',
     faltasEnMes: item.estudiantes?.cedula ? await contarFaltasEnMes(item.estudiantes.cedula, añoActual, mesActual) : 0
