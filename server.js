@@ -76,6 +76,7 @@ const origenesPermitidos = [
   'exp://',       // Expo Go
   'kairos://',    // Deep link de la app
   'http://localhost:5173',          // desarrollo web
+   'http://127.0.0.1:5173',
   'https://TU-DOMINIO-WEB.vercel.app',
 ];
 
