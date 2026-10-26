@@ -901,6 +901,51 @@ const getRosterPorMateria = async (req, res) => {
   }
 };
 
+// ========== QUITAR UN REGISTRO DE ASISTENCIA ==========
+// Para casos como: el alumno se fue después de pasar lista, o se escaneó por error.
+// Reglas:
+//  - El registro debe ser de la institución del usuario.
+//  - Un profesor solo puede quitar registros de SUS clases y de HOY (admin: cualquiera).
+//  - Los registros 'excusado' (excusas aprobadas) no se tocan desde aquí.
+const eliminarAsistencia = async (req, res) => {
+  const { id } = req.params;
+  const institucion_id = req.user.institucion_id;
+  const esAdmin = req.user.rol === 'admin';
+
+  try {
+    const { data: reg, error } = await supabase
+      .from('asistencia')
+      .select('id, cedula, fecha, estado, institucion_id, materias (profesor_id)')
+      .eq('id', id)
+      .single();
+    if (error || !reg) return res.status(404).json({ error: 'El registro no existe o ya fue eliminado' });
+
+    if (institucion_id && reg.institucion_id !== institucion_id) {
+      return res.status(403).json({ error: 'Este registro pertenece a otra institución' });
+    }
+    if (reg.estado === 'excusado') {
+      return res.status(400).json({ error: 'Este registro viene de una excusa aprobada y no se puede quitar desde aquí' });
+    }
+    if (!esAdmin) {
+      if (reg.materias?.profesor_id !== req.user.id) {
+        return res.status(403).json({ error: 'Solo puedes quitar asistencia de tus propias clases' });
+      }
+      if (reg.fecha !== fechaHondurasHoy()) {
+        return res.status(403).json({ error: 'Solo se pueden quitar registros de hoy' });
+      }
+    }
+
+    const { error: errDel } = await supabase.from('asistencia').delete().eq('id', id);
+    if (errDel) return res.status(500).json({ error: 'No se pudo quitar el registro: ' + errDel.message });
+
+    console.log(`🗑️ Asistencia ${id} (cédula ${reg.cedula}, ${reg.fecha}) quitada por ${req.user.email}`);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('❌ eliminarAsistencia:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+};
+
 module.exports = {
   registrarAsistencia, finalizarClase, sincronizarAsistenciaBatch, // ← agregado
   getAsistenciaHoy, getAsistenciaByFecha, getAsistenciaPorGrado,
