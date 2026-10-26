@@ -15,7 +15,6 @@ function horaHondurasAhora() {
 }
 
 // Convierte cualquier objeto Date a "YYYY-MM-DD" en horario de Honduras
-// (reemplazo seguro para new Date(...).toISOString().split('T')[0])
 function formatearFechaHonduras(date) {
   return date.toLocaleDateString('en-CA', { timeZone: ZONA_HORARIA });
 }
@@ -196,25 +195,6 @@ async function obtenerEstudiantesFiltrados(filtros, institucion_id) {
 }
 
 // ========== REGISTRAR ASISTENCIA ==========
-// ✅ FIX (duplicados): antes se hacía un "select" para ver si ya existía
-// el registro, y SOLO SI NO EXISTÍA se insertaba (check-then-insert).
-// Esas dos operaciones no son atómicas: si llegaban varias peticiones
-// casi al mismo tiempo para el mismo estudiante (doble tap del profesor,
-// o el interceptor de axios reintentando la petición original tras
-// refrescar el token), TODAS pasaban el chequeo "yaRegistro" antes de
-// que cualquiera terminara de insertar, y cada una insertaba su propio
-// registro y disparaba su propia notificación — de ahí las notificaciones
-// duplicadas ("Llegada tarde" x4, etc).
-//
-// Ahora ya NO se hace el select previo: se inserta directo, confiando en
-// la restricción única de la base de datos (cedula + fecha + materia_id).
-// Si la restricción existe, solo UNA petición logra insertar; las demás
-// reciben el error de restricción única (código 23505 en Postgres) y se
-// responde con el mismo mensaje de "ya registró asistencia" de antes.
-//
-// ⚠️ Requiere la migración SQL del comentario al inicio del archivo:
-//   ALTER TABLE asistencia ADD CONSTRAINT unico_cedula_fecha_materia
-//   UNIQUE (cedula, fecha, materia_id);
 const registrarAsistencia = async (req, res) => {
   const { cedula, materiaId } = req.body;
   const institucion_id = req.user.institucion_id;
@@ -232,26 +212,18 @@ const registrarAsistencia = async (req, res) => {
   const hoy = fechaHondurasHoy();
   const ahora = horaHondurasAhora();
 
-  // ── Insert directo (sin select previo) — la restricción única de la
-  // base de datos es la que realmente evita el duplicado ──
+  // Insert directo (sin select previo) — la restricción única de la base de datos evita duplicados
   const { error: errAsistencia } = await supabase.from('asistencia')
     .insert([{ cedula, fecha: hoy, hora: ahora, materia_id: materiaId, institucion_id, estado: 'presente' }]);
 
   if (errAsistencia) {
-    // 23505 = violación de restricción única en Postgres/Supabase.
-    // Significa que otra petición (o esta misma, reintentada) ya
-    // insertó el registro una fracción de segundo antes.
     if (errAsistencia.code === '23505') {
       return res.status(400).json({ error: 'Este estudiante ya registró asistencia en esta clase hoy', estudiante });
     }
     return res.status(500).json({ error: 'Error al registrar asistencia: ' + errAsistencia.message });
   }
 
-  res.json({
-    message: 'Asistencia registrada exitosamente',
-    estudiante: { cedula: estudiante.cedula, nombre: estudiante.nombre, apellido: estudiante.apellido, grado: estudiante.grado, seccion: estudiante.seccion, carrera: estudiante.carrera || 'No especificada', foto_url: estudiante.foto_url || null },
-    hora: ahora
-  });
+  // Verificar tardanza (antes de responder)
   try {
     const [hLim, mLim] = HORA_LIMITE_TARDANZA.split(':').map(Number);
     const [hAhora, mAhora] = ahora.split(':').map(Number);
@@ -259,6 +231,12 @@ const registrarAsistencia = async (req, res) => {
       notificarTardanza(cedula, hoy, ahora, HORA_LIMITE_TARDANZA).catch(console.error);
     }
   } catch (e) { console.error('Error verificando tardanza:', e.message); }
+
+  res.json({
+    message: 'Asistencia registrada exitosamente',
+    estudiante: { cedula: estudiante.cedula, nombre: estudiante.nombre, apellido: estudiante.apellido, grado: estudiante.grado, seccion: estudiante.seccion, carrera: estudiante.carrera || 'No especificada', foto_url: estudiante.foto_url || null },
+    hora: ahora
+  });
 };
 
 // ========== ASISTENCIA DEL DÍA ==========
@@ -284,8 +262,8 @@ const getAsistenciaHoy = async (req, res) => {
   const { data, error } = await queryAsistencia;
   if (error) return res.status(400).json({ error: error.message });
   const result = await Promise.all(data.map(async item => ({
-   id: item.id, fecha: item.fecha, hora: item.hora, estado: item.estado || 'presente',
-materia_id: item.materia_id, // ← nueva
+    id: item.id, fecha: item.fecha, hora: item.hora, estado: item.estado || 'presente',
+    materia_id: item.materia_id,
     estudiante: item.estudiantes,
     materia_nombre: item.materias?.nombre || 'Sin materia',
     faltasEnMes: item.estudiantes?.cedula ? await contarFaltasEnMes(item.estudiantes.cedula, añoActual, mesActual) : 0
@@ -338,7 +316,6 @@ const getReporteAsistencia = async (req, res) => {
   if (institucion_id) query = query.eq('institucion_id', institucion_id);
   const { data, error } = await query.order('fecha', { ascending: false });
   if (error) return res.status(400).json({ error: error.message });
-  // Incluir estado en la respuesta para mostrar excusados en la lista
   res.json(data.map(item => ({
     ...item,
     materia_nombre: item.materias?.nombre || 'Sin materia',
@@ -418,7 +395,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
     const { data: u } = supabase.storage.from('reportes').getPublicUrl(fn); return u.publicUrl;
   };
   try {
-    // ── Query incluye estado para detectar excusados ──
     let queryAsistencias = supabase.from('asistencia').select(`
       cedula, hora, materia_id, estado,
       estudiantes (cedula, nombre, apellido, grado, seccion, carrera),
@@ -429,7 +405,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
     if (filtrarPorProfesor) {
       const idsMaterias = await obtenerIdsMateriaProfesor(profesorEmail, institucion_id);
       if (!idsMaterias || idsMaterias.length === 0) { const url = await subirExcelVacio('No hay asistencias para este profesor en esta fecha.'); return res.json({ success: true, url }); }
-      // Incluye registros de las materias del profesor (presentes Y excusados)
       queryAsistencias = queryAsistencias.in('materia_id', idsMaterias);
     }
     if (grado) queryAsistencias = queryAsistencias.filter('materias.grado', 'eq', grado);
@@ -437,7 +412,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
     const { data: asistencias, error: errAsistencias } = await queryAsistencias;
     if (errAsistencias) throw errAsistencias;
 
-    // ── Agrupar presentes y excusados por materia ──
     const grupos = new Map();
     asistencias.forEach(asis => {
       const materia = asis.materias; if (!materia) return;
@@ -445,11 +419,9 @@ const exportarReporteCompletoExcel = async (req, res) => {
       grupos.get(materia.id).asistencias.push({ estudiante: asis.estudiantes, hora: asis.hora, estado: asis.estado || 'presente' });
     });
 
-    // ── Agregar ausentes a cada grupo ──
     const norm = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
     for (const [materiaId, grupo] of grupos) {
       const mat = grupo.materia;
-      // Obtener todos los estudiantes del grado/carrera de esta materia
       let qEst = supabase.from('estudiantes')
         .select('cedula, nombre, apellido, grado, seccion, carrera')
         .eq('grado', mat.grado);
@@ -462,7 +434,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
       ausentes.forEach(est => {
         grupo.asistencias.push({ estudiante: est, hora: null, estado: 'ausente' });
       });
-      // Ordenar: presentes primero, luego excusados, luego ausentes
       grupo.asistencias.sort((a, b) => {
         const orden = { presente: 0, excusado: 1, ausente: 2 };
         return (orden[a.estado] || 0) - (orden[b.estado] || 0);
@@ -501,7 +472,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
     if (grupos.size === 0) {
       worksheet.addRow(['No se registraron asistencias en esta fecha.']);
     } else {
-      // ── RESUMEN DE CLASES ──
       worksheet.mergeCells(`A${currentRow}:I${currentRow}`);
       worksheet.getCell(`A${currentRow}`).value = 'RESUMEN DE CLASES';
       worksheet.getCell(`A${currentRow}`).font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
@@ -541,7 +511,6 @@ const exportarReporteCompletoExcel = async (req, res) => {
       currentRow++;
       worksheet.addRow([]); currentRow++; worksheet.addRow([]); currentRow++;
 
-      // ── DETALLE POR CLASE ──
       const gruposOrdenados = Array.from(grupos.values()).sort((a, b) => {
         if (a.materia.grado !== b.materia.grado) return String(a.materia.grado).localeCompare(String(b.materia.grado));
         return String(a.materia.seccion).localeCompare(String(b.materia.seccion));
@@ -635,7 +604,6 @@ const getEstadisticas = async (req, res) => {
       if (institucion_id) q = q.eq('institucion_id', institucion_id);
       const { data } = await q; asistencias = data || [];
     }
-    // Excusados cuentan como presentes para las estadísticas
     const asistenciaCount = {};
     asistencias.forEach(a => { asistenciaCount[a.cedula] = (asistenciaCount[a.cedula] || 0) + 1; });
     const totalDias = Math.ceil((new Date(fin) - new Date(inicio)) / 86400000) + 1;
@@ -721,24 +689,6 @@ const exportarEstadisticasExcel = async (req, res) => {
 };
 
 // ========== FINALIZAR CLASE ==========
-// ✅ FIX (duplicados): antes esta función no tenía ninguna protección
-// contra ejecutarse dos veces para la misma clase. Si el botón
-// "Finalizar clase" no se deshabilitaba mientras esperaba la respuesta
-// (o el profesor le daba doble tap), el frontend disparaba dos
-// peticiones, y cada una recorría TODOS los estudiantes del grado/
-// carrera y volvía a notificar a cada padre — de ahí que "Asistencia
-// registrada" y "Ausencia en clase" llegaran exactamente 2 veces, con
-// la misma hora.
-//
-// Ahora, antes de notificar a nadie, se intenta insertar un registro
-// único en la tabla "clases_finalizadas" (materia_id + fecha). Si el
-// insert tiene éxito, es la primera vez que se finaliza esa clase hoy
-// y se sigue el flujo normal. Si falla por violación de restricción
-// única (23505), significa que esta clase YA fue finalizada — se
-// responde de inmediato sin volver a notificar a nadie.
-//
-// ⚠️ Requiere la migración SQL del comentario al inicio del archivo
-// (tabla clases_finalizadas con UNIQUE (materia_id, fecha)).
 const finalizarClase = async (req, res) => {
   const { materiaId, nombreProfesor, nombreMateria } = req.body;
   const institucion_id = req.user.institucion_id;
@@ -747,22 +697,19 @@ const finalizarClase = async (req, res) => {
   try {
     const hoy = fechaHondurasHoy();
 
-    // ── Candado contra doble finalización de la misma clase el mismo día ──
+    // Candado contra doble finalización
     const { error: errCandado } = await supabase
       .from('clases_finalizadas')
       .insert([{ materia_id: materiaId, fecha: hoy, institucion_id }]);
 
     if (errCandado) {
       if (errCandado.code === '23505') {
-        // Esta clase ya fue finalizada antes hoy — no se vuelve a notificar.
         return res.status(200).json({
           success: true,
           yaFinalizada: true,
           mensaje: 'Esta clase ya había sido finalizada hoy. No se enviaron notificaciones nuevamente.'
         });
       }
-      // Si la tabla de candado falla por otra razón, no arriesgamos
-      // notificaciones duplicadas: se corta aquí y se reporta el error.
       console.error('❌ Error verificando candado de finalizarClase:', errCandado.message);
       return res.status(500).json({ error: 'No se pudo verificar el estado de la clase: ' + errCandado.message });
     }
@@ -773,11 +720,9 @@ const finalizarClase = async (req, res) => {
     if (errMat || !materia) return res.status(404).json({ error: 'Materia no encontrada' });
 
     // 2. Todos los estudiantes del grado/carrera
-    // Normalizar carrera: quitar tildes y comparar en minúsculas
     const normalizarTextoLocal = (str) => (str || '').toLowerCase()
       .normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
 
-    // Obtener todos los estudiantes del grado y filtrar por carrera normalizando tildes
     let qEst = supabase.from('estudiantes')
       .select('cedula, nombre, apellido, carrera')
       .eq('grado', materia.grado);
@@ -830,10 +775,6 @@ const finalizarClase = async (req, res) => {
 };
 
 // ========== SINCRONIZAR ASISTENCIA OFFLINE (BATCH) ==========
-// Inserta registros capturados sin conexión, respetando la fecha/hora
-// ORIGINAL de cuando se pasó lista (no la hora de cuando sincroniza).
-// El constraint único (cedula, fecha, materia_id) evita duplicados si
-// se sincroniza dos veces por una reconexión intermitente.
 const sincronizarAsistenciaBatch = async (req, res) => {
   const { registros } = req.body;
   const institucion_id = req.user.institucion_id;
@@ -871,9 +812,6 @@ const sincronizarAsistenciaBatch = async (req, res) => {
 };
 
 // ========== ROSTER DE ESTUDIANTES POR MATERIA (para caché offline) ==========
-// Usado por la app para descargar, mientras hay internet, la lista de
-// estudiantes que pertenecen a una clase — así el profesor puede seguir
-// pasando asistencia sin conexión más adelante.
 const getRosterPorMateria = async (req, res) => {
   const { materiaId } = req.params;
   const institucion_id = req.user.institucion_id;
@@ -902,11 +840,6 @@ const getRosterPorMateria = async (req, res) => {
 };
 
 // ========== QUITAR UN REGISTRO DE ASISTENCIA ==========
-// Para casos como: el alumno se fue después de pasar lista, o se escaneó por error.
-// Reglas:
-//  - El registro debe ser de la institución del usuario.
-//  - Un profesor solo puede quitar registros de SUS clases y de HOY (admin: cualquiera).
-//  - Los registros 'excusado' (excusas aprobadas) no se tocan desde aquí.
 const eliminarAsistencia = async (req, res) => {
   const { id } = req.params;
   const institucion_id = req.user.institucion_id;
@@ -947,9 +880,19 @@ const eliminarAsistencia = async (req, res) => {
 };
 
 module.exports = {
-  registrarAsistencia, finalizarClase, sincronizarAsistenciaBatch, // ← agregado
-  getAsistenciaHoy, getAsistenciaByFecha, getAsistenciaPorGrado,
-  limpiarAsistenciaHoy, getReporteAsistencia,getRosterPorMateria,
-  exportarReporteExcel, exportarReporteCompletoExcel, getReportesGenerados,
-  getEstadisticas, exportarEstadisticasExcel
+  registrarAsistencia,
+  finalizarClase,
+  sincronizarAsistenciaBatch,
+  getAsistenciaHoy,
+  getAsistenciaByFecha,
+  getAsistenciaPorGrado,
+  limpiarAsistenciaHoy,
+  getReporteAsistencia,
+  getRosterPorMateria,
+  exportarReporteExcel,
+  exportarReporteCompletoExcel,
+  getReportesGenerados,
+  getEstadisticas,
+  exportarEstadisticasExcel,
+  eliminarAsistencia // <-- ¡Faltaba exportarla aquí!
 };
