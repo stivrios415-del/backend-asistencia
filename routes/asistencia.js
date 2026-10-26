@@ -9,6 +9,7 @@ router.post('/',                          asistenciaController.registrarAsistenc
 router.post('/finalizar-clase',           asistenciaController.finalizarClase);
 router.post('/sync-batch',                asistenciaController.sincronizarAsistenciaBatch); // ← nueva
 router.get('/hoy',                        asistenciaController.getAsistenciaHoy);
+router.delete('/:id', asistenciaController.eliminarAsistencia); // ← nueva, justo debajo
 router.get('/fecha/:fecha',               asistenciaController.getAsistenciaByFecha);
 router.get('/reporte/grado',              asistenciaController.getAsistenciaPorGrado);
 router.delete('/hoy',                     asistenciaController.limpiarAsistenciaHoy);
