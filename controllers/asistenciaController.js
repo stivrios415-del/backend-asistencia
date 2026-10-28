@@ -682,6 +682,22 @@ const finalizarClase = async (req, res) => {
   try {
     const hoy = fechaHondurasHoy();
 
+    // ── Colegios rurales: no se finaliza sin foto de evidencia ──
+    if (institucion_id) {
+      const { data: cfg } = await supabase.from('instituciones')
+        .select('requiere_evidencia').eq('id', institucion_id).single();
+      if (cfg?.requiere_evidencia) {
+        const { count } = await supabase.from('evidencias_clase')
+          .select('id', { count: 'exact', head: true }).eq('materia_id', materiaId).eq('fecha', hoy);
+        if (!count) {
+          return res.status(400).json({
+            codigo: 'EVIDENCIA_REQUERIDA',
+            error: 'Tu institución requiere una foto de evidencia de la clase antes de finalizar. Tómala desde la app y vuelve a intentar.',
+          });
+        }
+      } 
+    }
+
     const { error: errCandado } = await supabase
       .from('clases_finalizadas')
       .insert([{ materia_id: materiaId, fecha: hoy, institucion_id }]);
