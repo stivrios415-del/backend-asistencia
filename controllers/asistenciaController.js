@@ -672,7 +672,7 @@ const exportarEstadisticasExcel = async (req, res) => {
   } catch (error) { console.error('❌ Error exportando estadísticas:', error); res.status(500).json({ error: error.message }); }
 };
 
-// ========== FINALIZAR CLASE (AQUÍ SE ENVÍAN TODAS LAS NOTIFICACIONES) ==========
+// ========== FINALIZAR CLASE ==========
 const finalizarClase = async (req, res) => {
   const { materiaId, nombreProfesor, nombreMateria } = req.body;
   const institucion_id = req.user.institucion_id;
@@ -681,7 +681,6 @@ const finalizarClase = async (req, res) => {
   try {
     const hoy = fechaHondurasHoy();
 
-    // ── Colegios rurales: no se finaliza sin foto de evidencia ──
     if (institucion_id) {
       const { data: cfg } = await supabase.from('instituciones')
         .select('requiere_evidencia').eq('id', institucion_id).single();
@@ -735,7 +734,6 @@ const finalizarClase = async (req, res) => {
       return res.json({ success: true, presentes: 0, ausentes: 0 });
     }
 
-    // Traemos también la HORA de los que asistieron
     const { data: asistidos } = await supabase
       .from('asistencia').select('cedula, hora')
       .eq('fecha', hoy).eq('materia_id', materiaId);
@@ -750,7 +748,6 @@ const finalizarClase = async (req, res) => {
 
     const nombreClase = nombreMateria || materia.nombre || materia.carrera;
 
-    // ✅ LÓGICA DE NOTIFICACIONES MOVIDA AQUÍ
     for (const est of todosEstudiantes) {
       try {
         if (mapaPresentes.has(est.cedula)) {
@@ -882,6 +879,123 @@ const eliminarAsistencia = async (req, res) => {
     res.json({ success: true });
   } catch (e) {
     console.error('❌ eliminarAsistencia:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+};
+
+// ========== EVIDENCIA FOTOGRÁFICA DE LA CLASE ==========
+const MAX_EVIDENCIAS = 3;
+const BUCKET_EVIDENCIAS = 'evidencias';
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const numeroONull = (v, min, max) => {
+  const n = parseFloat(v);
+  return Number.isFinite(n) && n >= min && n <= max ? n : null;
+};
+
+async function materiaAccesible(req, materiaId) {
+  const { data: m } = await supabase.from('materias')
+    .select('id, profesor_id, institucion_id').eq('id', materiaId).single();
+  if (!m) return { status: 404, mensaje: 'La clase no existe' };
+  const inst = req.user.institucion_id;
+  if (inst && m.institucion_id && m.institucion_id !== inst) {
+    return { status: 403, mensaje: 'Esta clase pertenece a otra institución' };
+  }
+  if (req.user.rol !== 'admin' && m.profesor_id !== req.user.id) {
+    return { status: 403, mensaje: 'Solo puedes gestionar la evidencia de tus propias clases' };
+  }
+  return { materia: m };
+}
+
+const subirEvidencia = async (req, res) => {
+  try {
+    const { materiaId } = req.body;
+    if (!UUID_RE.test(materiaId || '')) return res.status(400).json({ error: 'Clase inválida' });
+    const f = req.file;
+    if (!f) return res.status(400).json({ error: 'Falta la foto' });
+    const esJpeg = f.buffer?.length > 3 && f.buffer[0] === 0xFF && f.buffer[1] === 0xD8 && f.buffer[2] === 0xFF;
+    if (!esJpeg) return res.status(400).json({ error: 'La evidencia debe ser una foto JPEG' });
+
+    const acceso = await materiaAccesible(req, materiaId);
+    if (acceso.status) return res.status(acceso.status).json({ error: acceso.mensaje });
+
+    const clienteId = String(req.body.clienteId || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 100) || null;
+    if (clienteId) {
+      const { data: ya } = await supabase.from('evidencias_clase').select('id').eq('cliente_id', clienteId).maybeSingle();
+      if (ya) return res.json({ success: true, duplicada: true });
+    }
+
+    const hoy = fechaHondurasHoy();
+    const hace7 = formatearFechaHonduras(new Date(Date.now() - 7 * 86400000));
+    const pedida = String(req.body.fecha || '');
+    const fecha = /^\d{4}-\d{2}-\d{2}$/.test(pedida) && pedida <= hoy && pedida >= hace7 ? pedida : hoy;
+
+    const { count } = await supabase.from('evidencias_clase')
+      .select('id', { count: 'exact', head: true }).eq('materia_id', materiaId).eq('fecha', fecha);
+    if ((count || 0) >= MAX_EVIDENCIAS) {
+      return res.status(400).json({ error: `Máximo ${MAX_EVIDENCIAS} fotos de evidencia por clase y día` });
+    }
+
+    const path = `${req.user.institucion_id || 'sin-institucion'}/${materiaId}/${fecha}/${clienteId || Date.now()}.jpg`;
+    const { error: errUp } = await supabase.storage.from(BUCKET_EVIDENCIAS)
+      .upload(path, f.buffer, { contentType: 'image/jpeg', upsert: true });
+    if (errUp) return res.status(500).json({ error: 'No se pudo guardar la foto: ' + errUp.message });
+
+    const cap = new Date(req.body.capturadoEn);
+    const { error: errIns } = await supabase.from('evidencias_clase').insert([{
+      cliente_id: clienteId,
+      materia_id: materiaId,
+      institucion_id: req.user.institucion_id,
+      profesor_id: req.user.id,
+      fecha,
+      foto_path: path,
+      capturado_en: isNaN(cap) ? null : cap.toISOString(),
+      latitud: numeroONull(req.body.latitud, -90, 90),
+      longitud: numeroONull(req.body.longitud, -180, 180),
+      precision_m: numeroONull(req.body.precision, 0, 100000),
+    }]);
+    if (errIns) {
+      if (errIns.code === '23505') return res.json({ success: true, duplicada: true });
+      await supabase.storage.from(BUCKET_EVIDENCIAS).remove([path]);
+      return res.status(500).json({ error: 'No se pudo registrar la evidencia: ' + errIns.message });
+    }
+    res.json({ success: true });
+  } catch (e) {
+    console.error('❌ subirEvidencia:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+};
+
+const listarEvidencias = async (req, res) => {
+  try {
+    const { materiaId } = req.params;
+    if (!UUID_RE.test(materiaId || '')) return res.status(400).json({ error: 'Clase inválida' });
+    const acceso = await materiaAccesible(req, materiaId);
+    if (acceso.status) return res.status(acceso.status).json({ error: acceso.mensaje });
+
+    const fecha = /^\d{4}-\d{2}-\d{2}$/.test(req.query.fecha || '') ? req.query.fecha : fechaHondurasHoy();
+    const { data, error } = await supabase.from('evidencias_clase')
+      .select('id, foto_path, capturado_en, subido_en, latitud, longitud, precision_m')
+      .eq('materia_id', materiaId).eq('fecha', fecha).order('subido_en', { ascending: true });
+    if (error) throw error;
+
+    if (req.query.soloTotal === '1') return res.json({ total: data.length });
+
+    let firmadas = [];
+    if (data.length) {
+      const r = await supabase.storage.from(BUCKET_EVIDENCIAS).createSignedUrls(data.map((d) => d.foto_path), 3600);
+      firmadas = r.data || [];
+    }
+    res.json({
+      total: data.length,
+      fotos: data.map((d, i) => ({
+        id: d.id, url: firmadas[i]?.signedUrl || null,
+        capturado_en: d.capturado_en, subido_en: d.subido_en,
+        latitud: d.latitud, longitud: d.longitud, precision_m: d.precision_m,
+      })),
+    });
+  } catch (e) {
+    console.error('❌ listarEvidencias:', e.message);
     res.status(500).json({ error: e.message });
   }
 };
@@ -1059,5 +1173,6 @@ module.exports = {
   limpiarAsistenciaHoy, getReporteAsistencia, getRosterPorMateria,
   exportarReporteExcel, exportarReporteCompletoExcel, getReportesGenerados,
   getEstadisticas, exportarEstadisticasExcel, eliminarAsistencia,
-  getPanelProfesor // ✅ NUEVO EXPORT
+  getPanelProfesor, // ✅ NUEVO EXPORT
+  subirEvidencia, listarEvidencias // ✅ AGREGADAS LAS FUNCIONES DE EVIDENCIA
 };
