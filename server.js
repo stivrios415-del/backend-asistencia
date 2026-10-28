@@ -316,6 +316,8 @@ app.get('/api/health', (req, res) => {
 // RUTAS
 // ============================================
 const estudiantesRoutes            = require('./routes/estudiantes');
+// ✅ NUEVA RUTA: Importación de estudianteFotos
+const estudianteFotosRoutes        = require('./routes/estudianteFotos'); 
 const asistenciaRoutes             = require('./routes/asistencia');
 const adminRoutes                  = require('./routes/admin');
 const materiasRoutes               = require('./routes/materias');
@@ -339,6 +341,8 @@ app.use('/api/auth-padre',    limitAuth,   authPadreRoutes);
 // Endpoints publicos
 app.use('/api/instituciones', limitPub,    institucionesRoutes);
 app.use('/api/estudiantes',   limitNormal, estudiantesRoutes);
+// ✅ NUEVA RUTA: Uso del endpoint estudiante-fotos
+app.use('/api/estudiante-fotos', limitNormal, estudianteFotosRoutes); 
 
 // Endpoints privados
 app.use('/api/asistencia',    limitNormal, asistenciaRoutes);
