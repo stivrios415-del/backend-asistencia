@@ -189,7 +189,6 @@ async function obtenerEstudiantesFiltrados(filtros, institucion_id) {
 }
 
 // ========== REGISTRAR ASISTENCIA ==========
-// ✅ CORRECCIÓN: Ya NO envía notificación al registrar. Solo guarda en BD.
 const registrarAsistencia = async (req, res) => {
   const { cedula, materiaId } = req.body;
   const institucion_id = req.user.institucion_id;
@@ -887,10 +886,178 @@ const eliminarAsistencia = async (req, res) => {
   }
 };
 
+// ========== PANEL DE INICIO: indicadores de asistencia ==========
+async function traerTodo(construir) {
+  const PAGINA = 1000;
+  const todo = [];
+  for (let desde = 0; ; desde += PAGINA) {
+    const { data, error } = await construir().range(desde, desde + PAGINA - 1);
+    if (error) throw error;
+    todo.push(...data);
+    if (data.length < PAGINA) break;
+  }
+  return todo;
+}
+
+const getPanelProfesor = async (req, res) => {
+  try {
+    const institucion_id = req.user.institucion_id;
+    const global = req.user.rol === 'admin' && req.query.alcance === 'institucion';
+
+    const cache = req.app.locals.cache;
+    const claveCache = `panel:${req.user.id}:${global ? 'inst' : 'mias'}`;
+    const enCache = cache?.get(claveCache);
+    if (enCache) return res.json(enCache);
+
+    const hoy = fechaHondurasHoy();
+    const ventanaDias = global ? 14 : 30;
+    const desde = formatearFechaHonduras(new Date(Date.now() - (ventanaDias - 1) * 86400000));
+
+    let qm = supabase.from('materias').select('id, nombre, grado, seccion, carrera, profesor_id');
+    if (institucion_id) qm = qm.eq('institucion_id', institucion_id);
+    if (!global) qm = qm.eq('profesor_id', req.user.id);
+    const { data: materias, error: errM } = await qm;
+    if (errM) throw errM;
+
+    const base = { fecha: hoy, actualizadoEn: new Date().toISOString(), alcance: global ? 'institucion' : 'mias', ventanaDias };
+    if (!materias?.length) {
+      return res.json({
+        ...base,
+        hoy: { clasesTotal: 0, clasesIniciadas: 0, esperados: 0, presentes: 0, excusados: 0, ausentes: 0, pct: null },
+        clases: [], tendencia: [], ausentesHoy: [], ultimosRegistros: [], enRiesgo: [],
+      });
+    }
+    const ids = materias.map((m) => m.id);
+
+    const [estudiantes, filas] = await Promise.all([
+      traerTodo(() => {
+        let q = supabase.from('estudiantes').select('cedula, nombre, apellido, grado, seccion, carrera').order('cedula');
+        if (institucion_id) q = q.eq('institucion_id', institucion_id);
+        return q;
+      }),
+      traerTodo(() => supabase.from('asistencia')
+        .select('id, materia_id, cedula, fecha, hora, estado')
+        .in('materia_id', ids).gte('fecha', desde).lte('fecha', hoy).order('id')),
+    ]);
+
+    const clave = (g, c) => `${normalizarTexto(String(g ?? ''))}|${normalizarTexto(String(c ?? ''))}`;
+    const porGrupo = new Map();
+    for (const e of estudiantes) {
+      const k = clave(e.grado, e.carrera);
+      if (!porGrupo.has(k)) porGrupo.set(k, []);
+      porGrupo.get(k).push(e);
+    }
+    const rosterDe = new Map(materias.map((m) => [m.id, porGrupo.get(clave(m.grado, m.carrera)) || []]));
+    const alumno = new Map(estudiantes.map((e) => [e.cedula, e]));
+    const materiaPorId = new Map(materias.map((m) => [m.id, m]));
+
+    const add = (mapa, k, v) => { if (!mapa.has(k)) mapa.set(k, new Set()); mapa.get(k).add(v); };
+    const presSes = new Map();
+    const excSes = new Map();
+    const asistio = new Map();
+    const sesiones = new Map();
+    for (const f of filas) {
+      add(asistio, `${f.materia_id}|${f.cedula}`, f.fecha);
+      if (f.estado === 'excusado') add(excSes, `${f.fecha}|${f.materia_id}`, f.cedula);
+      else { add(presSes, `${f.fecha}|${f.materia_id}`, f.cedula); add(sesiones, f.materia_id, f.fecha); }
+    }
+
+    const clases = materias.map((m) => {
+      const k = `${hoy}|${m.id}`;
+      const presentes = presSes.get(k)?.size || 0;
+      const excusados = excSes.get(k)?.size || 0;
+      const esperados = rosterDe.get(m.id).length;
+      const iniciada = presentes > 0;
+      return {
+        id: m.id, nombre: m.nombre, grado: m.grado, seccion: m.seccion,
+        esperados, presentes, excusados, iniciada,
+        ausentes: iniciada ? Math.max(0, esperados - presentes - excusados) : 0,
+        pct: iniciada && esperados ? Math.round((presentes / esperados) * 100) : null,
+      };
+    });
+    const ini = clases.filter((c) => c.iniciada);
+    const suma = (k) => ini.reduce((s, c) => s + c[k], 0);
+    const hoyResumen = {
+      clasesTotal: clases.length, clasesIniciadas: ini.length,
+      esperados: suma('esperados'), presentes: suma('presentes'), excusados: suma('excusados'), ausentes: suma('ausentes'),
+    };
+    hoyResumen.pct = hoyResumen.esperados ? Math.round((hoyResumen.presentes / hoyResumen.esperados) * 100) : null;
+
+    const fechas = [...new Set([...sesiones.values()].flatMap((s) => [...s]))].sort().slice(-14);
+    const tendencia = fechas.map((fecha) => {
+      let presentes = 0, esperados = 0;
+      for (const m of materias) {
+        if (!sesiones.get(m.id)?.has(fecha)) continue;
+        esperados += rosterDe.get(m.id).length;
+        presentes += presSes.get(`${fecha}|${m.id}`)?.size || 0;
+      }
+      return { fecha, presentes, esperados, pct: esperados ? Math.round((presentes / esperados) * 100) : 0 };
+    });
+
+    const ausentesHoy = [];
+    for (const m of materias) {
+      const k = `${hoy}|${m.id}`;
+      if (!presSes.has(k)) continue;
+      const aqui = presSes.get(k);
+      const exc = excSes.get(k) || new Set();
+      for (const e of rosterDe.get(m.id)) {
+        if (!aqui.has(e.cedula) && !exc.has(e.cedula)) {
+          ausentesHoy.push({ cedula: e.cedula, nombre: e.nombre, apellido: e.apellido, grado: e.grado, seccion: e.seccion, clase: m.nombre });
+        }
+      }
+    }
+    ausentesHoy.sort((a, b) => (a.apellido || '').localeCompare(b.apellido || ''));
+
+    const ultimosRegistros = filas
+      .filter((f) => f.fecha === hoy && f.estado !== 'excusado')
+      .sort((a, b) => String(b.hora || '').localeCompare(String(a.hora || '')))
+      .slice(0, 10)
+      .map((f) => {
+        const e = alumno.get(f.cedula);
+        return { hora: f.hora, nombre: e ? `${e.nombre} ${e.apellido}` : f.cedula, clase: materiaPorId.get(f.materia_id)?.nombre || '' };
+      });
+
+    const acum = new Map();
+    for (const m of materias) {
+      const ses = sesiones.get(m.id);
+      if (!ses?.size) continue;
+      for (const e of rosterDe.get(m.id)) {
+        const fue = asistio.get(`${m.id}|${e.cedula}`) || new Set();
+        let aus = 0;
+        for (const fch of ses) if (!fue.has(fch)) aus++;
+        const a = acum.get(e.cedula) || { e, ausencias: 0, sesiones: 0 };
+        a.ausencias += aus;
+        a.sesiones += ses.size;
+        acum.set(e.cedula, a);
+      }
+    }
+    const enRiesgo = [...acum.values()]
+      .filter((a) => a.ausencias >= 2)
+      .sort((a, b) => b.ausencias - a.ausencias || b.ausencias / b.sesiones - a.ausencias / a.sesiones)
+      .slice(0, 8)
+      .map((a) => ({
+        cedula: a.e.cedula, nombre: a.e.nombre, apellido: a.e.apellido, grado: a.e.grado, seccion: a.e.seccion,
+        ausencias: a.ausencias, sesiones: a.sesiones,
+        pctAsistencia: Math.round((1 - a.ausencias / a.sesiones) * 100),
+      }));
+
+    const respuesta = {
+      ...base, hoy: hoyResumen, clases, tendencia,
+      ausentesHoy: ausentesHoy.slice(0, 60), ultimosRegistros, enRiesgo,
+    };
+    cache?.set(claveCache, respuesta, 10);
+    res.json(respuesta);
+  } catch (e) {
+    console.error('❌ getPanelProfesor:', e.message);
+    res.status(500).json({ error: 'No se pudo calcular el panel: ' + e.message });
+  }
+};
+
 module.exports = {
   registrarAsistencia, finalizarClase, sincronizarAsistenciaBatch,
   getAsistenciaHoy, getAsistenciaByFecha, getAsistenciaPorGrado,
   limpiarAsistenciaHoy, getReporteAsistencia, getRosterPorMateria,
   exportarReporteExcel, exportarReporteCompletoExcel, getReportesGenerados,
-  getEstadisticas, exportarEstadisticasExcel, eliminarAsistencia
+  getEstadisticas, exportarEstadisticasExcel, eliminarAsistencia,
+  getPanelProfesor // ✅ NUEVO EXPORT
 };
