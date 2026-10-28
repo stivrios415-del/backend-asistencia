@@ -1,6 +1,6 @@
 const express = require('express');
 const router  = express.Router();
-const multer  = require('multer'); // <-- Agregado aquí
+const multer  = require('multer'); 
 const { verificarProfesor } = require('../middleware/auth');
 const asistenciaController  = require('../controllers/asistenciaController');
 
@@ -32,9 +32,11 @@ router.post('/evidencia', (req, res, next) => {
 router.get('/evidencia/:materiaId',       asistenciaController.listarEvidencias);
 
 // --- Rutas de Consulta y Reportes ---
+router.get('/panel',                      asistenciaController.getPanelProfesor); // ✅ NUEVA RUTA AGREGADA
+
 router.get('/hoy',                        asistenciaController.getAsistenciaHoy);
-router.delete('/hoy',                     asistenciaController.limpiarAsistenciaHoy); // <-- MOVIDO AQUÍ (Importante)
-router.delete('/:id',                     asistenciaController.eliminarAsistencia);   // <-- Debe ir después de /hoy
+router.delete('/hoy',                     asistenciaController.limpiarAsistenciaHoy); 
+router.delete('/:id',                     asistenciaController.eliminarAsistencia);   
 
 router.get('/fecha/:fecha',               asistenciaController.getAsistenciaByFecha);
 router.get('/reporte/grado',              asistenciaController.getAsistenciaPorGrado);
