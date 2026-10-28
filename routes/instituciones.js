@@ -17,11 +17,14 @@ router.get('/codigo/:codigo', getInstitucionPorCodigo);
 router.get('/mia', verificarToken, async (req, res) => {
   const institucionId = req.user?.institucion_id;
   if (!institucionId) return res.status(404).json({ error: 'Sin institución asociada' });
+  
   const { data, error } = await supabase
     .from('instituciones')
-    .select('id, nombre, color_primario, color_secundario, logo_url')
+    // 👇 AQUÍ ESTÁ TU LÍNEA PEGADA 👇
+    .select('id, nombre, color_primario, color_secundario, logo_url, requiere_evidencia')
     .eq('id', institucionId)
     .single();
+    
   if (error || !data) return res.status(404).json({ error: 'Institución no encontrada' });
   res.json(data);
 });
