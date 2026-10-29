@@ -1,24 +1,10 @@
 const { supabase } = require('../config/supabase');
 const { parseExcel } = require('../utils/excelParser');
 
-// ========== HELPER: obtener perfil del usuario (rol e institución) ==========
-async function getPerfil(userId) {
-  const { data, error } = await supabase
-    .from('profesores')
-    .select('rol, institucion_id')
-    .eq('id', userId)
-    .single();
-  if (error) return { rol: null, institucion_id: null };
-  return { rol: data?.rol || null, institucion_id: data?.institucion_id || null };
-}
-
 // ========== CONSULTA PÚBLICA — para credencial del estudiante ==========
-// ✅ NO requiere autenticación. Filtra por institucion_id para aislar colegios.
 const getEstudiantePublico = async (req, res) => {
   const { cedula } = req.params;
-  const { institucion_id } = req.query; // ✅ recibe la institución del frontend
-
-  console.log(`🌐 [estudiantes] GET /publico/${cedula} - institución: ${institucion_id}`);
+  const { institucion_id } = req.query; 
 
   try {
     let query = supabase
@@ -26,53 +12,41 @@ const getEstudiantePublico = async (req, res) => {
       .select('cedula, nombre, apellido, grado, seccion, carrera, foto_url, institucion_id')
       .eq('cedula', cedula);
 
-    // ✅ Filtrar por institución — cada colegio solo ve sus propios alumnos
     if (institucion_id) {
       query = query.eq('institucion_id', institucion_id);
     }
 
     const { data, error } = await query.maybeSingle();
 
-    if (error) {
-      console.error('❌ Error en getEstudiantePublico:', error.message);
-      return res.status(500).json({ error: 'Error al buscar estudiante' });
-    }
+    if (error) return res.status(500).json({ error: 'Error al buscar estudiante' });
+    if (!data) return res.status(404).json({ error: 'Estudiante no encontrado' });
 
-    if (!data) {
-      console.log(`⚠️ Estudiante ${cedula} no encontrado en esta institución`);
-      return res.status(404).json({ error: 'Estudiante no encontrado' });
-    }
-
-    console.log(`✅ Estudiante encontrado (público): ${data.nombre} ${data.apellido}`);
     res.json(data);
   } catch (err) {
-    console.error('❌ Excepción en getEstudiantePublico:', err.message);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
 // ========== OBTENER TODOS LOS ESTUDIANTES ==========
 const getEstudiantes = async (req, res) => {
-  console.log('📋 [estudiantes] GET / - Obteniendo todos los estudiantes');
   try {
-    const userId = req.user.id;
-    const { rol, institucion_id } = await getPerfil(userId);
-
-    let query = supabase.from('estudiantes').select('*');
-    if (institucion_id) {
-      query = query.eq('institucion_id', institucion_id);
+    // ✅ USAMOS DIRECTAMENTE req.user.institucion_id
+    const institucion_id = req.user.institucion_id;
+    
+    // Seguridad extra: si no hay institución, no mostramos nada
+    if (!institucion_id) {
+      return res.status(403).json({ error: 'No tienes una institución asignada.' });
     }
 
-    const { data, error } = await query.order('apellido', { ascending: true });
+    const { data, error } = await supabase
+      .from('estudiantes')
+      .select('*')
+      .eq('institucion_id', institucion_id) // ✅ Filtro estricto
+      .order('apellido', { ascending: true });
 
-    if (error) {
-      console.error('❌ Error en getEstudiantes:', error.message);
-      return res.status(400).json({ error: error.message });
-    }
-    console.log(`✅ Encontrados ${data.length} estudiantes`);
+    if (error) return res.status(400).json({ error: error.message });
     res.json(data);
   } catch (err) {
-    console.error('❌ Excepción en getEstudiantes:', err.message);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
@@ -80,32 +54,21 @@ const getEstudiantes = async (req, res) => {
 // ========== BUSCAR ESTUDIANTE POR CÉDULA (protegido) ==========
 const getEstudianteByCedula = async (req, res) => {
   const { cedula } = req.params;
-  console.log(`🔍 [estudiantes] GET /${cedula} - Buscando por cédula`);
-
   try {
-    const userId = req.user.id;
-    const { institucion_id } = await getPerfil(userId);
-
+    const institucion_id = req.user.institucion_id;
+    
     let query = supabase.from('estudiantes').select('*').eq('cedula', cedula);
     if (institucion_id) {
       query = query.eq('institucion_id', institucion_id);
     }
+    
     const { data, error } = await query.maybeSingle();
 
-    if (error) {
-      console.error('❌ Error en getEstudianteByCedula:', error.message);
-      return res.status(500).json({ error: 'Error al buscar estudiante' });
-    }
+    if (error) return res.status(500).json({ error: 'Error al buscar estudiante' });
+    if (!data) return res.status(404).json({ error: 'Estudiante no encontrado' });
 
-    if (!data) {
-      console.log(`⚠️ Estudiante con cédula ${cedula} no encontrado`);
-      return res.status(404).json({ error: 'Estudiante no encontrado' });
-    }
-
-    console.log(`✅ Estudiante encontrado: ${data.nombre} ${data.apellido}`);
     res.json(data);
   } catch (err) {
-    console.error('❌ Excepción en getEstudianteByCedula:', err.message);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
@@ -113,11 +76,10 @@ const getEstudianteByCedula = async (req, res) => {
 // ========== CREAR ESTUDIANTE INDIVIDUAL ==========
 const createEstudiante = async (req, res) => {
   const { cedula, nombre, apellido, grado, seccion, carrera } = req.body;
-  console.log(`📝 [estudiantes] POST / - Creando estudiante ${cedula}`);
 
   try {
-    const userId = req.user.id;
-    const { rol, institucion_id } = await getPerfil(userId);
+    const rol = req.user.rol;
+    const institucion_id = req.user.institucion_id;
 
     if (rol !== 'admin') {
       return res.status(403).json({ error: 'No tienes permiso para crear estudiantes' });
@@ -128,14 +90,9 @@ const createEstudiante = async (req, res) => {
       .insert([{ cedula, nombre, apellido, grado, seccion, carrera, institucion_id }])
       .select();
 
-    if (error) {
-      console.error('❌ Error en createEstudiante:', error.message);
-      return res.status(400).json({ error: error.message });
-    }
-    console.log(`✅ Estudiante creado: ${cedula}`);
+    if (error) return res.status(400).json({ error: error.message });
     res.json(data[0]);
   } catch (err) {
-    console.error('❌ Excepción en createEstudiante:', err.message);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
@@ -147,8 +104,9 @@ const bulkUploadEstudiantes = async (req, res) => {
       return res.status(400).json({ error: 'No se recibió ningún archivo' });
     }
 
-    const userId = req.user.id;
-    const { rol, institucion_id } = await getPerfil(userId);
+    const rol = req.user.rol;
+    const institucion_id = req.user.institucion_id;
+
     if (rol !== 'admin') {
       return res.status(403).json({ error: 'No tienes permiso para realizar carga masiva' });
     }
@@ -174,7 +132,6 @@ const bulkUploadEstudiantes = async (req, res) => {
       resultados
     });
   } catch (err) {
-    console.error('❌ Error en bulkUpload:', err.message);
     res.status(500).json({ error: err.message });
   }
 };
@@ -183,22 +140,22 @@ const bulkUploadEstudiantes = async (req, res) => {
 const updateEstudiante = async (req, res) => {
   const { cedula } = req.params;
   const { nombre, apellido, grado, seccion, carrera } = req.body;
-  console.log(`✏️ [estudiantes] PUT /${cedula} - Actualizando`);
 
   try {
-    const userId = req.user.id;
-    const { rol, institucion_id } = await getPerfil(userId);
+    const rol = req.user.rol;
+    const institucion_id = req.user.institucion_id;
 
     if (rol !== 'admin') {
       return res.status(403).json({ error: 'No tienes permiso para modificar estudiantes' });
     }
 
+    // Verificar que el estudiante pertenece a la institución actual
     let checkQuery = supabase.from('estudiantes').select('institucion_id').eq('cedula', cedula);
     if (institucion_id) {
       checkQuery = checkQuery.eq('institucion_id', institucion_id);
     }
-    const { data: existing, error: checkError } = await checkQuery.maybeSingle();
-    if (checkError || !existing) {
+    const { data: existing } = await checkQuery.maybeSingle();
+    if (!existing) {
       return res.status(403).json({ error: 'No tienes permiso para modificar este estudiante' });
     }
 
@@ -208,13 +165,9 @@ const updateEstudiante = async (req, res) => {
       .eq('cedula', cedula)
       .select();
 
-    if (error) {
-      console.error('❌ Error en updateEstudiante:', error.message);
-      return res.status(400).json({ error: error.message });
-    }
+    if (error) return res.status(400).json({ error: error.message });
     res.json(data[0]);
   } catch (err) {
-    console.error('❌ Excepción en updateEstudiante:', err.message);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
@@ -222,11 +175,10 @@ const updateEstudiante = async (req, res) => {
 // ========== ELIMINAR ESTUDIANTE ==========
 const deleteEstudiante = async (req, res) => {
   const { cedula } = req.params;
-  console.log(`🗑️ [estudiantes] DELETE /${cedula} - Eliminando`);
 
   try {
-    const userId = req.user.id;
-    const { rol, institucion_id } = await getPerfil(userId);
+    const rol = req.user.rol;
+    const institucion_id = req.user.institucion_id;
 
     if (rol !== 'admin') {
       return res.status(403).json({ error: 'No tienes permiso para eliminar estudiantes' });
@@ -236,8 +188,8 @@ const deleteEstudiante = async (req, res) => {
     if (institucion_id) {
       checkQuery = checkQuery.eq('institucion_id', institucion_id);
     }
-    const { data: existing, error: checkError } = await checkQuery.maybeSingle();
-    if (checkError || !existing) {
+    const { data: existing } = await checkQuery.maybeSingle();
+    if (!existing) {
       return res.status(403).json({ error: 'No tienes permiso para eliminar este estudiante' });
     }
 
@@ -246,13 +198,9 @@ const deleteEstudiante = async (req, res) => {
       .delete()
       .eq('cedula', cedula);
 
-    if (error) {
-      console.error('❌ Error en deleteEstudiante:', error.message);
-      return res.status(400).json({ error: error.message });
-    }
+    if (error) return res.status(400).json({ error: error.message });
     res.json({ message: 'Estudiante eliminado' });
   } catch (err) {
-    console.error('❌ Excepción en deleteEstudiante:', err.message);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
@@ -260,21 +208,18 @@ const deleteEstudiante = async (req, res) => {
 // ========== OBTENER GRADOS Y SECCIONES ÚNICOS ==========
 const getGradosSecciones = async (req, res) => {
   try {
-    const userId = req.user.id;
-    const { institucion_id } = await getPerfil(userId);
+    const institucion_id = req.user.institucion_id;
 
     let query = supabase.from('estudiantes').select('grado, seccion');
     if (institucion_id) {
       query = query.eq('institucion_id', institucion_id);
     }
+    
     const { data, error } = await query
       .order('grado', { ascending: true })
       .order('seccion', { ascending: true });
 
-    if (error) {
-      console.error('❌ Error en getGradosSecciones:', error.message);
-      return res.status(400).json({ error: error.message });
-    }
+    if (error) return res.status(400).json({ error: error.message });
 
     const uniqueMap = new Map();
     data.forEach(item => {
@@ -284,10 +229,8 @@ const getGradosSecciones = async (req, res) => {
       }
     });
     const gradosSecciones = Array.from(uniqueMap.values());
-    console.log(`✅ Grados y secciones únicos encontrados: ${gradosSecciones.length}`);
     res.json(gradosSecciones);
   } catch (err) {
-    console.error('❌ Excepción en getGradosSecciones:', err.message);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
