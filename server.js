@@ -94,7 +94,8 @@ app.use(cors({
     return callback(new Error('No permitido por CORS'));
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
+  // ✅ NUEVO: Se agregó 'X-Institucion-Id' a los headers permitidos
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID', 'X-Institucion-Id'],
   exposedHeaders: ['X-Cache', 'X-Request-ID'],
   credentials: true,
   maxAge: 86400,
@@ -327,6 +328,8 @@ const padresRoutes                 = require('./routes/padres');
 const excusasRoutes                = require('./routes/excusas');
 const profesorIndependienteRoutes  = require('./routes/profesorIndependiente');
 const masterAdminRoutes            = require('./routes/masterAdmin'); // panel del dueno de la app (distinto del admin institucional)
+// ✅ NUEVA RUTA: Importación de redRoutes
+const redRoutes                    = require('./routes/red'); 
 
 let reportesPdfRoutes = null;
 try {
@@ -343,6 +346,8 @@ app.use('/api/instituciones', limitPub,    institucionesRoutes);
 app.use('/api/estudiantes',   limitNormal, estudiantesRoutes);
 // ✅ NUEVA RUTA: Uso del endpoint estudiante-fotos
 app.use('/api/estudiante-fotos', limitNormal, estudianteFotosRoutes); 
+// ✅ NUEVA RUTA: Uso del endpoint red
+app.use('/api/red', limitPub, redRoutes);
 
 // Endpoints privados
 app.use('/api/asistencia',    limitNormal, asistenciaRoutes);
@@ -406,5 +411,5 @@ app.listen(PORT, () => {
   console.log(`\n🚀 Servidor en puerto ${PORT}`);
   console.log(`🔒 Modo: ${process.env.NODE_ENV || 'development'}`);
   console.log(`📋 Rutas: estudiantes | asistencia | admin | materias`);
-  console.log(`         instituciones | auth-padre | padres | excusas | profesor-independiente | master-admin\n`);
+  console.log(`         instituciones | auth-padre | padres | excusas | profesor-independiente | master-admin | red\n`);
 });
