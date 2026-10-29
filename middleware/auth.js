@@ -66,7 +66,6 @@ const verificarToken = async (req, res, next) => {
       if (error || !user) return res.status(401).json({ error: 'Token invalido o expirado' });
 
       // 1) Profesor / admin de un colegio
-      // ✅ FIX: Se usa .maybeSingle() para no lanzar error si no es profesor
       const { data: profesorDB } = await supabase
         .from('profesores').select('id, rol, institucion_id, activo').eq('id', user.id).maybeSingle();
       let perfil = profesorDB || null;
@@ -113,8 +112,6 @@ const verificarToken = async (req, res, next) => {
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
-
-// ... (resto de funciones verificarAdmin, verificarProfesor, etc. se mantienen igual)
 
 // ============================================
 // VERIFICAR ADMIN
