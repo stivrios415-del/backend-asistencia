@@ -15,6 +15,7 @@ router.get('/codigo/:codigo', async (req, res) => {
 router.get('/mi-red', verificarToken, verificarCoordinador, async (req, res) => {
   try {
     const hoy = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Tegucigalpa' });
+    
     const [{ data: red }, { data: coord }, { data: colegios, error }] = await Promise.all([
       supabase.from('redes').select('id, nombre').eq('id', req.user.red_id).single(),
       supabase.from('red_coordinadores').select('nombre').eq('usuario_id', req.user.id).single(),
@@ -22,6 +23,7 @@ router.get('/mi-red', verificarToken, verificarCoordinador, async (req, res) => 
         .select('id, nombre, color_primario, color_secundario, logo_url, es_rural, requiere_evidencia')
         .eq('red_id', req.user.red_id).order('nombre'),
     ]);
+    
     if (error) throw error;
 
     const conDatos = await Promise.all((colegios || []).map(async (c) => {
@@ -30,16 +32,20 @@ router.get('/mi-red', verificarToken, verificarCoordinador, async (req, res) => 
         for (const [k, v] of filtros) q = q.eq(k, v);
         return q;
       };
+      
       const [est, prof, pres, evid] = await Promise.all([
         cuenta('estudiantes', 'cedula', []),
         cuenta('profesores', 'id', [['rol', 'profesor']]),
         cuenta('asistencia', 'cedula', [['fecha', hoy]]).neq('estado', 'excusado'),
         cuenta('evidencias_clase', 'id', [['fecha', hoy]]),
       ]);
+      
       return {
         ...c,
-        estudiantes: est.count || 0, profesores: prof.count || 0,
-        presentesHoy: pres.count || 0, evidenciaHoy: evid.count || 0,
+        estudiantes: est.count || 0, 
+        profesores: prof.count || 0,
+        presentesHoy: pres.count || 0, 
+        evidenciaHoy: evid.count || 0,
       };
     }));
 
