@@ -3,7 +3,6 @@ const { supabase, supabaseAuth } = require('../config/supabase');
 
 // ============================================
 // SEGURIDAD: Cache de tokens validados
-// TTL 5 minutos. Clave = hash SHA-256 del token
 // ============================================
 const tokenCache = new Map();
 const TOKEN_CACHE_TTL = 5 * 60 * 1000;
@@ -21,10 +20,8 @@ setInterval(() => {
 // COORDINADOR / COLEGIO ELEGIDO
 // ============================================
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const cacheColegios = new Map(); // `${red_id}|${institucion_id}` -> vence
+const cacheColegios = new Map(); 
 
-// Un coordinador actúa como ADMIN del colegio indicado en X-Institucion-Id.
-// Sin ese header solo puede usar las rutas /api/red.
 async function aplicarColegioElegido(req, userData) {
   if (userData.rol !== 'coordinador') return { user: userData };
   
@@ -35,7 +32,7 @@ async function aplicarColegioElegido(req, userData) {
   const k = `${userData.red_id}|${elegido}`;
   const vence = cacheColegios.get(k);
   if (!vence || Date.now() > vence) {
-    const { data } = await supabase.from('instituciones').select('id, red_id').eq('id', elegido).single();
+    const { data } = await supabase.from('instituciones').select('id, red_id').eq('id', elegido).maybeSingle();
     if (!data || data.red_id !== userData.red_id) {
       return { error: { status: 403, mensaje: 'Ese colegio no pertenece a tu red' } };
     }
@@ -69,14 +66,15 @@ const verificarToken = async (req, res, next) => {
       if (error || !user) return res.status(401).json({ error: 'Token invalido o expirado' });
 
       // 1) Profesor / admin de un colegio
+      // ✅ FIX: Se usa .maybeSingle() para no lanzar error si no es profesor
       const { data: profesorDB } = await supabase
-        .from('profesores').select('id, rol, institucion_id, activo').eq('id', user.id).single();
+        .from('profesores').select('id, rol, institucion_id, activo').eq('id', user.id).maybeSingle();
       let perfil = profesorDB || null;
 
       // 2) Coordinador de una red de colegios
       if (!perfil) {
         const { data: coordDB } = await supabase
-          .from('red_coordinadores').select('usuario_id, red_id, activo').eq('usuario_id', user.id).single();
+          .from('red_coordinadores').select('usuario_id, red_id, activo').eq('usuario_id', user.id).maybeSingle();
         if (coordDB) {
           perfil = { id: coordDB.usuario_id, rol: 'coordinador', institucion_id: null, activo: coordDB.activo !== false, red_id: coordDB.red_id };
         }
@@ -84,7 +82,7 @@ const verificarToken = async (req, res, next) => {
 
       // 3) Padre (tabla 'usuarios')
       if (!perfil) {
-        const { data: usuarioDB } = await supabase.from('usuarios').select('*').eq('id', user.id).single();
+        const { data: usuarioDB } = await supabase.from('usuarios').select('*').eq('id', user.id).maybeSingle();
         if (usuarioDB) {
           perfil = {
             id: usuarioDB.id, rol: usuarioDB.rol || 'padre',
@@ -93,7 +91,10 @@ const verificarToken = async (req, res, next) => {
         }
       }
 
-      if (!perfil) return res.status(401).json({ error: 'Usuario no registrado en el sistema' });
+      if (!perfil) {
+        console.log(`❌ Usuario ${user.email} no encontrado en profesores, red_coordinadores ni usuarios.`);
+        return res.status(401).json({ error: 'Usuario no registrado en el sistema' });
+      }
       if (perfil.activo === false) return res.status(403).json({ error: 'Cuenta desactivada. Contacta al administrador.' });
 
       userData = {
@@ -112,6 +113,8 @@ const verificarToken = async (req, res, next) => {
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
+
+// ... (resto de funciones verificarAdmin, verificarProfesor, etc. se mantienen igual)
 
 // ============================================
 // VERIFICAR ADMIN
@@ -202,6 +205,6 @@ module.exports = {
   verificarPadre,
   verificarInstitucion, 
   verificarRol, 
-  verificarCoordinador, // ✅ NUEVO
+  verificarCoordinador,
   invalidarTokenCache,
 };
