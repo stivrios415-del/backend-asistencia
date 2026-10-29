@@ -141,6 +141,32 @@ function normalizarTexto(str) {
   return str.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
 }
 
+// ========== COLEGIOS RURALES (NUEVO) ==========
+const cacheRural = new Map();
+async function institucionEsRural(institucion_id) {
+  if (!institucion_id) return false;
+  const c = cacheRural.get(institucion_id);
+  if (c && Date.now() < c.expira) return c.valor;
+  const { data } = await supabase.from('instituciones').select('es_rural').eq('id', institucion_id).single();
+  const valor = !!data?.es_rural;
+  cacheRural.set(institucion_id, { valor, expira: Date.now() + 60000 });
+  return valor;
+}
+
+// Alumnos de una clase: rural = todo el colegio; resto = mismo grado + carrera
+async function estudiantesDeClase(materia, institucion_id, columnas = 'cedula, nombre, apellido, grado, seccion, carrera, foto_url') {
+  const rural = await institucionEsRural(institucion_id);
+  let q = supabase.from('estudiantes').select(columnas);
+  if (institucion_id) q = q.eq('institucion_id', institucion_id);
+  if (!rural) q = q.eq('grado', materia.grado);
+  const { data, error } = await q;
+  if (error) throw error;
+  if (rural) return data || [];
+  const carreraNorm = normalizarTexto(materia.carrera);
+  return (data || []).filter((e) => normalizarTexto(e.carrera) === carreraNorm);
+}
+// ============================================
+
 async function contarFaltasEnMes(cedula, año, mes) {
   const primerDia = formatearFechaHonduras(new Date(año, mes - 1, 1));
   const hoy = new Date();
@@ -194,15 +220,25 @@ const registrarAsistencia = async (req, res) => {
   const institucion_id = req.user.institucion_id;
   if (!cedula) return res.status(400).json({ error: 'Cédula no proporcionada' });
   if (!materiaId) return res.status(400).json({ error: 'Debe especificar la materia/clase' });
+  
   const { data: materia, error: errMateria } = await supabase.from('materias').select('grado, carrera, nombre, profesor_id, profesores:profesor_id(nombre)').eq('id', materiaId).single();
   if (errMateria || !materia) return res.status(404).json({ error: 'La clase seleccionada no existe' });
+  
+  // ✅ FIX RURAL: Se agregó institucion_id al select
   const { data: estudiante, error: errEstudiante } = await supabase.from('estudiantes')
-    .select('cedula, nombre, apellido, grado, seccion, carrera, foto_url').eq('cedula', cedula).single();
+    .select('cedula, nombre, apellido, grado, seccion, carrera, foto_url, institucion_id').eq('cedula', cedula).single();
   if (errEstudiante || !estudiante) return res.status(404).json({ error: 'Estudiante no encontrado' });
-  if (normalizarTexto(String(estudiante.grado)) !== normalizarTexto(String(materia.grado)) ||
-      normalizarTexto(estudiante.carrera) !== normalizarTexto(materia.carrera)) {
+
+  const rural = await institucionEsRural(institucion_id);
+  if (rural) {
+    if (estudiante.institucion_id !== institucion_id) {
+      return res.status(400).json({ error: 'Este estudiante no pertenece a este colegio.' });
+    }
+  } else if (normalizarTexto(String(estudiante.grado)) !== normalizarTexto(String(materia.grado)) ||
+             normalizarTexto(estudiante.carrera) !== normalizarTexto(materia.carrera)) {
     return res.status(400).json({ error: `Este estudiante no pertenece a esta clase. Solo se permite para grado ${materia.grado} - ${materia.carrera}.` });
   }
+
   const hoy = fechaHondurasHoy();
   const ahora = horaHondurasAhora();
 
@@ -403,18 +439,13 @@ const exportarReporteCompletoExcel = async (req, res) => {
       grupos.get(materia.id).asistencias.push({ estudiante: asis.estudiantes, hora: asis.hora, estado: asis.estado || 'presente' });
     });
 
-    const norm = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+    // ✅ FIX RURAL: Se usa estudiantesDeClase
     for (const [materiaId, grupo] of grupos) {
       const mat = grupo.materia;
-      let qEst = supabase.from('estudiantes')
-        .select('cedula, nombre, apellido, grado, seccion, carrera')
-        .eq('grado', mat.grado);
-      if (institucion_id) qEst = qEst.eq('institucion_id', institucion_id);
-      const { data: todosEst } = await qEst;
+      const todosEst = await estudiantesDeClase(mat, institucion_id, 'cedula, nombre, apellido, grado, seccion, carrera');
       const cedulasPresentes = new Set(grupo.asistencias.map(a => a.estudiante?.cedula));
-      const ausentes = (todosEst || []).filter(e =>
-        norm(e.carrera) === norm(mat.carrera) && !cedulasPresentes.has(e.cedula)
-      );
+      const ausentes = todosEst.filter(e => !cedulasPresentes.has(e.cedula));
+      
       ausentes.forEach(est => {
         grupo.asistencias.push({ estudiante: est, hora: null, estado: 'ausente' });
       });
@@ -716,19 +747,8 @@ const finalizarClase = async (req, res) => {
       .from('materias').select('grado, carrera, nombre').eq('id', materiaId).single();
     if (errMat || !materia) return res.status(404).json({ error: 'Materia no encontrada' });
 
-    const normalizarTextoLocal = (str) => (str || '').toLowerCase()
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
-
-    let qEst = supabase.from('estudiantes')
-      .select('cedula, nombre, apellido, carrera')
-      .eq('grado', materia.grado);
-    if (institucion_id) qEst = qEst.eq('institucion_id', institucion_id);
-    const { data: todosEstudiantesRaw } = await qEst;
-
-    const carreraNorm = normalizarTextoLocal(materia.carrera);
-    const todosEstudiantes = (todosEstudiantesRaw || []).filter(e =>
-      normalizarTextoLocal(e.carrera) === carreraNorm
-    );
+    // ✅ FIX RURAL: Se usa estudiantesDeClase
+    const todosEstudiantes = await estudiantesDeClase(materia, institucion_id, 'cedula, nombre, apellido, carrera');
 
     if (!todosEstudiantes || todosEstudiantes.length === 0) {
       return res.json({ success: true, presentes: 0, ausentes: 0 });
@@ -826,15 +846,8 @@ const getRosterPorMateria = async (req, res) => {
       .from('materias').select('grado, carrera').eq('id', materiaId).single();
     if (errMateria || !materia) return res.status(404).json({ error: 'Materia no encontrada' });
 
-    let qEst = supabase.from('estudiantes')
-      .select('cedula, nombre, apellido, grado, seccion, carrera, foto_url')
-      .eq('grado', materia.grado);
-    if (institucion_id) qEst = qEst.eq('institucion_id', institucion_id);
-    const { data: todosEst, error: errEst } = await qEst;
-    if (errEst) throw errEst;
-
-    const carreraNorm = normalizarTexto(materia.carrera);
-    const roster = (todosEst || []).filter(e => normalizarTexto(e.carrera) === carreraNorm);
+    // ✅ FIX RURAL: Se usa estudiantesDeClase
+    const roster = await estudiantesDeClase(materia, institucion_id);
 
     res.json(roster);
   } catch (error) {
@@ -1061,7 +1074,11 @@ const getPanelProfesor = async (req, res) => {
       if (!porGrupo.has(k)) porGrupo.set(k, []);
       porGrupo.get(k).push(e);
     }
-    const rosterDe = new Map(materias.map((m) => [m.id, porGrupo.get(clave(m.grado, m.carrera)) || []]));
+    
+    // ✅ FIX RURAL
+    const rural = await institucionEsRural(institucion_id);
+    const rosterDe = new Map(materias.map((m) => [m.id, rural ? estudiantes : (porGrupo.get(clave(m.grado, m.carrera)) || [])]));
+    
     const alumno = new Map(estudiantes.map((e) => [e.cedula, e]));
     const materiaPorId = new Map(materias.map((m) => [m.id, m]));
 
@@ -1173,6 +1190,6 @@ module.exports = {
   limpiarAsistenciaHoy, getReporteAsistencia, getRosterPorMateria,
   exportarReporteExcel, exportarReporteCompletoExcel, getReportesGenerados,
   getEstadisticas, exportarEstadisticasExcel, eliminarAsistencia,
-  getPanelProfesor, // ✅ NUEVO EXPORT
-  subirEvidencia, listarEvidencias // ✅ AGREGADAS LAS FUNCIONES DE EVIDENCIA
+  getPanelProfesor,
+  subirEvidencia, listarEvidencias
 };
