@@ -50,88 +50,62 @@ async function aplicarColegioElegido(req, userData) {
 const verificarToken = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
-
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ error: 'No autorizado - Token no proporcionado' });
     }
-
     const token = authHeader.split(' ')[1];
-
     if (!token || token.length < 20 || token.split('.').length !== 3) {
       return res.status(401).json({ error: 'Token invalido' });
     }
 
-    // -- Verificar cache primero (clave = hash del token completo) --
     const tokenKey = hashToken(token);
-    const cached   = tokenCache.get(tokenKey);
-    let userData;
+    let userData = null;
+    const cached = tokenCache.get(tokenKey);
 
     if (cached && Date.now() < cached.expira) {
       userData = cached.user;
     } else {
-      // -- Verificar con Supabase (cliente anon, NO service_role) --
       const { data: { user }, error } = await supabaseAuth.auth.getUser(token);
-      if (error || !user) {
-        return res.status(401).json({ error: 'Token invalido o expirado' });
-      }
+      if (error || !user) return res.status(401).json({ error: 'Token invalido o expirado' });
 
-      // -- 1) Intentar como profesor/admin (tabla 'profesores') --
-      // ✅ FIX: Se agregó 'red_id' al select
+      // 1) Profesor / admin de un colegio
       const { data: profesorDB } = await supabase
-        .from('profesores')
-        .select('id, rol, institucion_id, activo, red_id')
-        .eq('id', user.id)
-        .single();
-
+        .from('profesores').select('id, rol, institucion_id, activo').eq('id', user.id).single();
       let perfil = profesorDB || null;
 
-      // -- 2) Si no es profesor/admin, intentar como padre/coordinador (tabla 'usuarios') --
+      // 2) Coordinador de una red de colegios
       if (!perfil) {
-        const { data: usuarioDB } = await supabase
-          .from('usuarios')
-          .select('*')
-          .eq('id', user.id)
-          .single();
+        const { data: coordDB } = await supabase
+          .from('red_coordinadores').select('usuario_id, red_id, activo').eq('usuario_id', user.id).single();
+        if (coordDB) {
+          perfil = { id: coordDB.usuario_id, rol: 'coordinador', institucion_id: null, activo: coordDB.activo !== false, red_id: coordDB.red_id };
+        }
+      }
 
+      // 3) Padre (tabla 'usuarios')
+      if (!perfil) {
+        const { data: usuarioDB } = await supabase.from('usuarios').select('*').eq('id', user.id).single();
         if (usuarioDB) {
           perfil = {
-            id: usuarioDB.id,
-            rol: usuarioDB.rol || 'padre',
-            institucion_id: usuarioDB.institucion_id ?? null,
-            activo: usuarioDB.activo !== false,
-            red_id: usuarioDB.red_id ?? null, // ✅ FIX: Se agregó 'red_id'
+            id: usuarioDB.id, rol: usuarioDB.rol || 'padre',
+            institucion_id: usuarioDB.institucion_id ?? null, activo: usuarioDB.activo !== false,
           };
         }
       }
 
-      if (!perfil) {
-        return res.status(401).json({ error: 'Usuario no registrado en el sistema' });
-      }
-
-      if (perfil.activo === false) {
-        return res.status(403).json({ error: 'Cuenta desactivada. Contacta al administrador.' });
-      }
+      if (!perfil) return res.status(401).json({ error: 'Usuario no registrado en el sistema' });
+      if (perfil.activo === false) return res.status(403).json({ error: 'Cuenta desactivada. Contacta al administrador.' });
 
       userData = {
-        id:             perfil.id,
-        email:          user.email,
-        rol:            perfil.rol,
-        institucion_id: perfil.institucion_id,
-        red_id:         perfil.red_id, // ✅ FIX: Agregado a userData
+        id: perfil.id, email: user.email, rol: perfil.rol,
+        institucion_id: perfil.institucion_id, red_id: perfil.red_id ?? null,
       };
-
-      // Se guarda el usuario base en caché (sin la modificación del coordinador)
       tokenCache.set(tokenKey, { user: userData, expira: Date.now() + TOKEN_CACHE_TTL });
     }
 
-    // ✅ NUEVO: Se aplica la lógica del coordinador DESPUÉS de leer/escribir la caché base
-    const { user: finalUser, error: errorColegio } = await aplicarColegioElegido(req, userData);
-    
-    if (errorColegio) {
-      return res.status(errorColegio.status).json({ error: errorColegio.mensaje });
-    }
-
-    req.user = finalUser;
+    const r = await aplicarColegioElegido(req, userData);
+    if (r.error) return res.status(r.error.status).json({ error: r.error.mensaje });
+    req.user = r.user;
     next();
   } catch (error) {
     console.error('Error en verificarToken:', error.message);
@@ -176,6 +150,16 @@ const verificarPadre = (req, res, next) => {
 };
 
 // ============================================
+// VERIFICAR COORDINADOR
+// ============================================
+const verificarCoordinador = (req, res, next) => {
+  if (!req.user?.red_id) {
+    return res.status(403).json({ error: 'Acceso denegado. Se requiere una cuenta de coordinador de red.' });
+  }
+  next();
+};
+
+// ============================================
 // VERIFICAR MISMA INSTITUCION
 // ============================================
 const verificarInstitucion = (req, res, next) => {
@@ -212,11 +196,12 @@ const invalidarTokenCache = (token) => {
 };
 
 module.exports = {
-  verificarToken,
-  verificarAdmin,
-  verificarProfesor,
+  verificarToken, 
+  verificarAdmin, 
+  verificarProfesor, 
   verificarPadre,
-  verificarInstitucion,
-  verificarRol,
+  verificarInstitucion, 
+  verificarRol, 
+  verificarCoordinador, // ✅ NUEVO
   invalidarTokenCache,
 };
