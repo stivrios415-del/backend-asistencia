@@ -47,5 +47,6 @@ router.get('/reporte-completo-excel',     asistenciaController.exportarReporteCo
 router.get('/estadisticas',               asistenciaController.getEstadisticas);
 router.get('/roster/:materiaId',          asistenciaController.getRosterPorMateria);
 router.get('/estadisticas/excel',         asistenciaController.exportarEstadisticasExcel);
+router.get('/evidencias', asistenciaController.listarEvidenciasRango);
 
 module.exports = router;
