@@ -141,7 +141,7 @@ function normalizarTexto(str) {
   return str.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
 }
 
-// ========== COLEGIOS RURALES (NUEVO) ==========
+// ========== COLEGIOS RURALES ==========
 const cacheRural = new Map();
 async function institucionEsRural(institucion_id) {
   if (!institucion_id) return false;
@@ -1013,6 +1013,100 @@ const listarEvidencias = async (req, res) => {
   }
 };
 
+// ========== EVIDENCIAS DE UN PERÍODO (panel de colegios rurales) ==========
+// Solo admin (el coordinador de red actúa como admin del colegio elegido).
+const listarEvidenciasRango = async (req, res) => {
+  try {
+    if (req.user.rol !== 'admin') {
+      return res.status(403).json({ error: 'Solo el administrador o el coordinador puede ver las evidencias' });
+    }
+    const institucion_id = req.user.institucion_id;
+    if (!institucion_id) return res.status(400).json({ error: 'Sin institución asociada' });
+
+    const esFecha = (f) => /^\d{4}-\d{2}-\d{2}$/.test(f || '');
+    const hoy = fechaHondurasHoy();
+    const fin = esFecha(req.query.fechaFin) ? req.query.fechaFin : hoy;
+    const inicio = esFecha(req.query.fechaInicio)
+      ? req.query.fechaInicio
+      : formatearFechaHonduras(new Date(Date.now() - 29 * 86400000));
+    const LIMITE = 150;
+
+    const { data: materias, error: errM } = await supabase.from('materias')
+      .select('id, nombre, profesor_id').eq('institucion_id', institucion_id);
+    if (errM) throw errM;
+    const ids = (materias || []).map((m) => m.id);
+    if (!ids.length) {
+      return res.json({ desde: inicio, hasta: fin, total: 0, truncado: false, totalAlumnos: 0, evidencias: [], sinEvidencia: [] });
+    }
+
+    const [todas, asist, { count: totalAlumnos }] = await Promise.all([
+      traerTodo(() => supabase.from('evidencias_clase')
+        .select('id, materia_id, profesor_id, fecha, foto_path, capturado_en, subido_en, latitud, longitud, precision_m')
+        .eq('institucion_id', institucion_id).gte('fecha', inicio).lte('fecha', fin).order('id')),
+      traerTodo(() => supabase.from('asistencia')
+        .select('id, materia_id, cedula, fecha')
+        .in('materia_id', ids).gte('fecha', inicio).lte('fecha', fin).neq('estado', 'excusado').order('id')),
+      supabase.from('estudiantes').select('cedula', { count: 'exact', head: true }).eq('institucion_id', institucion_id),
+    ]);
+
+    const nombreClase = new Map(materias.map((m) => [m.id, m.nombre]));
+    const profDeClase = new Map(materias.map((m) => [m.id, m.profesor_id]));
+    const profIds = [...new Set([...todas.map((e) => e.profesor_id), ...materias.map((m) => m.profesor_id)].filter(Boolean))];
+    const { data: profs } = profIds.length
+      ? await supabase.from('profesores').select('id, nombre').in('id', profIds)
+      : { data: [] };
+    const nombreProf = new Map((profs || []).map((p) => [p.id, p.nombre]));
+
+    // Presentes por clase y día
+    const presentes = new Map();
+    for (const a of asist) {
+      const k = `${a.fecha}|${a.materia_id}`;
+      if (!presentes.has(k)) presentes.set(k, new Set());
+      presentes.get(k).add(a.cedula);
+    }
+
+    // Más recientes primero, con enlaces temporales (1 hora) a las fotos
+    todas.sort((a, b) => b.fecha.localeCompare(a.fecha) || String(b.subido_en).localeCompare(String(a.subido_en)));
+    const evidencias = todas.slice(0, LIMITE);
+    let urls = [];
+    if (evidencias.length) {
+      const r = await supabase.storage.from(BUCKET_EVIDENCIAS).createSignedUrls(evidencias.map((e) => e.foto_path), 3600);
+      urls = r.data || [];
+    }
+
+    // Días con lista pero sin evidencia (hoy se excluye: todavía puede enviarla)
+    const conEvidencia = new Set(todas.map((e) => `${e.fecha}|${e.materia_id}`));
+    const sinEvidencia = [];
+    for (const [k, set] of presentes) {
+      const [fecha, materiaId] = k.split('|');
+      if (fecha >= hoy || conEvidencia.has(k)) continue;
+      sinEvidencia.push({
+        fecha, clase: nombreClase.get(materiaId) || '',
+        profesor: nombreProf.get(profDeClase.get(materiaId)) || '', presentes: set.size,
+      });
+    }
+    sinEvidencia.sort((a, b) => b.fecha.localeCompare(a.fecha));
+
+    res.json({
+      desde: inicio, hasta: fin, total: todas.length, truncado: todas.length > LIMITE,
+      totalAlumnos: totalAlumnos || 0,
+      evidencias: evidencias.map((e, i) => ({
+        id: e.id, fecha: e.fecha,
+        clase: nombreClase.get(e.materia_id) || '',
+        profesor: nombreProf.get(e.profesor_id) || '',
+        presentes: presentes.get(`${e.fecha}|${e.materia_id}`)?.size || 0,
+        capturado_en: e.capturado_en, subido_en: e.subido_en,
+        latitud: e.latitud, longitud: e.longitud, precision_m: e.precision_m,
+        url: urls[i]?.signedUrl || null,
+      })),
+      sinEvidencia: sinEvidencia.slice(0, 60),
+    });
+  } catch (e) {
+    console.error('❌ listarEvidenciasRango:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+};
+
 // ========== PANEL DE INICIO: indicadores de asistencia ==========
 async function traerTodo(construir) {
   const PAGINA = 1000;
@@ -1191,5 +1285,5 @@ module.exports = {
   exportarReporteExcel, exportarReporteCompletoExcel, getReportesGenerados,
   getEstadisticas, exportarEstadisticasExcel, eliminarAsistencia,
   getPanelProfesor,
-  subirEvidencia, listarEvidencias
+  subirEvidencia, listarEvidencias, listarEvidenciasRango
 };
