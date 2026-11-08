@@ -130,7 +130,10 @@ const verificarAdmin = (req, res, next) => {
 const verificarProfesor = [
   verificarToken,
   (req, res, next) => {
-    if (req.user?.rol !== 'profesor' && req.user?.rol !== 'admin') {
+    // ✅ FIX: Se agregó 'coordinador' para que no bloquee el acceso al panel
+    const rolesPermitidos = ['profesor', 'admin', 'coordinador'];
+    
+    if (!rolesPermitidos.includes(req.user?.rol)) {
       console.warn(`🚨 Acceso denegado profesor — usuario: ${req.user?.email} rol: ${req.user?.rol}`);
       return res.status(403).json({ error: 'Acceso denegado. Se requieren permisos de profesor.' });
     }
