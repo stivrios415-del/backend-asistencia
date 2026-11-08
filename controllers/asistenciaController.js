@@ -141,7 +141,7 @@ function normalizarTexto(str) {
   return str.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
 }
 
-// ========== COLEGIOS RURALES (NUEVO) ==========
+// ========== COLEGIOS RURALES ==========
 const cacheRural = new Map();
 async function institucionEsRural(institucion_id) {
   if (!institucion_id) return false;
@@ -153,10 +153,10 @@ async function institucionEsRural(institucion_id) {
   return valor;
 }
 
-// Alumnos de una clase: rural = todo el colegio; resto = mismo grado + carrera
+// Alumnos de una clase: rural = todo el colegio; resto = mismo grado + carrera.
+// Los alumnos archivados (egresados o retirados) nunca se incluyen.
 async function estudiantesDeClase(materia, institucion_id, columnas = 'cedula, nombre, apellido, grado, seccion, carrera, foto_url') {
   const rural = await institucionEsRural(institucion_id);
-  // ✅ FIX ARCHIVADOS: Se agregó .eq('archivado', false)
   let q = supabase.from('estudiantes').select(columnas).eq('archivado', false);
   if (institucion_id) q = q.eq('institucion_id', institucion_id);
   if (!rural) q = q.eq('grado', materia.grado);
@@ -203,7 +203,6 @@ async function obtenerIdsMateriaProfesor(profesorEmail, institucion_id) {
 }
 
 async function obtenerEstudiantesFiltrados(filtros, institucion_id) {
-  // ✅ FIX ARCHIVADOS: Se agregó .eq('archivado', false)
   let q = supabase.from('estudiantes').select('cedula, nombre, apellido, grado, seccion, carrera').eq('archivado', false).order('apellido', { ascending: true });
   if (institucion_id) q = q.eq('institucion_id', institucion_id);
   const { data, error } = await q;
@@ -222,16 +221,14 @@ const registrarAsistencia = async (req, res) => {
   const institucion_id = req.user.institucion_id;
   if (!cedula) return res.status(400).json({ error: 'Cédula no proporcionada' });
   if (!materiaId) return res.status(400).json({ error: 'Debe especificar la materia/clase' });
-  
+
   const { data: materia, error: errMateria } = await supabase.from('materias').select('grado, carrera, nombre, profesor_id, profesores:profesor_id(nombre)').eq('id', materiaId).single();
   if (errMateria || !materia) return res.status(404).json({ error: 'La clase seleccionada no existe' });
-  
-  // ✅ FIX ARCHIVADOS: Se agregó 'archivado' al select
+
   const { data: estudiante, error: errEstudiante } = await supabase.from('estudiantes')
     .select('cedula, nombre, apellido, grado, seccion, carrera, foto_url, institucion_id, archivado').eq('cedula', cedula).single();
   if (errEstudiante || !estudiante) return res.status(404).json({ error: 'Estudiante no encontrado' });
 
-  // ✅ FIX ARCHIVADOS: Bloqueo de registro
   if (estudiante.archivado) {
     return res.status(400).json({ error: 'Este estudiante está archivado (egresado o retirado).' });
   }
@@ -446,13 +443,13 @@ const exportarReporteCompletoExcel = async (req, res) => {
       grupos.get(materia.id).asistencias.push({ estudiante: asis.estudiantes, hora: asis.hora, estado: asis.estado || 'presente' });
     });
 
-    // ✅ FIX RURAL: Se usa estudiantesDeClase
+    // Ausentes de cada clase (colegio rural = todo el colegio; sin archivados)
     for (const [materiaId, grupo] of grupos) {
       const mat = grupo.materia;
       const todosEst = await estudiantesDeClase(mat, institucion_id, 'cedula, nombre, apellido, grado, seccion, carrera');
       const cedulasPresentes = new Set(grupo.asistencias.map(a => a.estudiante?.cedula));
       const ausentes = todosEst.filter(e => !cedulasPresentes.has(e.cedula));
-      
+
       ausentes.forEach(est => {
         grupo.asistencias.push({ estudiante: est, hora: null, estado: 'ausente' });
       });
@@ -719,6 +716,7 @@ const finalizarClase = async (req, res) => {
   try {
     const hoy = fechaHondurasHoy();
 
+    // Colegios que exigen evidencia: no se puede finalizar sin foto
     if (institucion_id) {
       const { data: cfg } = await supabase.from('instituciones')
         .select('requiere_evidencia').eq('id', institucion_id).single();
@@ -731,7 +729,7 @@ const finalizarClase = async (req, res) => {
             error: 'Tu institución requiere una foto de evidencia de la clase antes de finalizar. Tómala desde la app y vuelve a intentar.',
           });
         }
-      } 
+      }
     }
 
     const { error: errCandado } = await supabase
@@ -754,7 +752,6 @@ const finalizarClase = async (req, res) => {
       .from('materias').select('grado, carrera, nombre').eq('id', materiaId).single();
     if (errMat || !materia) return res.status(404).json({ error: 'Materia no encontrada' });
 
-    // ✅ FIX RURAL: Se usa estudiantesDeClase
     const todosEstudiantes = await estudiantesDeClase(materia, institucion_id, 'cedula, nombre, apellido, carrera');
 
     if (!todosEstudiantes || todosEstudiantes.length === 0) {
@@ -764,7 +761,7 @@ const finalizarClase = async (req, res) => {
     const { data: asistidos } = await supabase
       .from('asistencia').select('cedula, hora')
       .eq('fecha', hoy).eq('materia_id', materiaId);
-    
+
     const mapaPresentes = new Map();
     (asistidos || []).forEach(a => mapaPresentes.set(a.cedula, a.hora));
 
@@ -779,7 +776,7 @@ const finalizarClase = async (req, res) => {
       try {
         if (mapaPresentes.has(est.cedula)) {
           const horaRegistro = mapaPresentes.get(est.cedula);
-          
+
           const [hLim, mLim] = HORA_LIMITE_TARDANZA.split(':').map(Number);
           const [hReg, mReg] = horaRegistro.split(':').map(Number);
           const esTarde = hReg > hLim || (hReg === hLim && mReg > mLim);
@@ -853,7 +850,6 @@ const getRosterPorMateria = async (req, res) => {
       .from('materias').select('grado, carrera').eq('id', materiaId).single();
     if (errMateria || !materia) return res.status(404).json({ error: 'Materia no encontrada' });
 
-    // ✅ FIX RURAL + ARCHIVADOS: Se usa estudiantesDeClase
     const roster = await estudiantesDeClase(materia, institucion_id);
 
     res.json(roster);
@@ -1020,6 +1016,101 @@ const listarEvidencias = async (req, res) => {
   }
 };
 
+// ========== EVIDENCIAS DE UN PERÍODO (panel de colegios rurales) ==========
+// Solo admin (el coordinador de red actúa como admin del colegio elegido).
+const listarEvidenciasRango = async (req, res) => {
+  try {
+    if (req.user.rol !== 'admin') {
+      return res.status(403).json({ error: 'Solo el administrador o el coordinador puede ver las evidencias' });
+    }
+    const institucion_id = req.user.institucion_id;
+    if (!institucion_id) return res.status(400).json({ error: 'Sin institución asociada' });
+
+    const esFecha = (f) => /^\d{4}-\d{2}-\d{2}$/.test(f || '');
+    const hoy = fechaHondurasHoy();
+    const fin = esFecha(req.query.fechaFin) ? req.query.fechaFin : hoy;
+    const inicio = esFecha(req.query.fechaInicio)
+      ? req.query.fechaInicio
+      : formatearFechaHonduras(new Date(Date.now() - 29 * 86400000));
+    const LIMITE = 150;
+
+    const { data: materias, error: errM } = await supabase.from('materias')
+      .select('id, nombre, profesor_id').eq('institucion_id', institucion_id);
+    if (errM) throw errM;
+    const ids = (materias || []).map((m) => m.id);
+    if (!ids.length) {
+      return res.json({ desde: inicio, hasta: fin, total: 0, truncado: false, totalAlumnos: 0, evidencias: [], sinEvidencia: [] });
+    }
+
+    const [todas, asist, { count: totalAlumnos }] = await Promise.all([
+      traerTodo(() => supabase.from('evidencias_clase')
+        .select('id, materia_id, profesor_id, fecha, foto_path, capturado_en, subido_en, latitud, longitud, precision_m')
+        .eq('institucion_id', institucion_id).gte('fecha', inicio).lte('fecha', fin).order('id')),
+      traerTodo(() => supabase.from('asistencia')
+        .select('id, materia_id, cedula, fecha')
+        .in('materia_id', ids).gte('fecha', inicio).lte('fecha', fin).neq('estado', 'excusado').order('id')),
+      supabase.from('estudiantes').select('cedula', { count: 'exact', head: true })
+        .eq('institucion_id', institucion_id).eq('archivado', false),
+    ]);
+
+    const nombreClase = new Map(materias.map((m) => [m.id, m.nombre]));
+    const profDeClase = new Map(materias.map((m) => [m.id, m.profesor_id]));
+    const profIds = [...new Set([...todas.map((e) => e.profesor_id), ...materias.map((m) => m.profesor_id)].filter(Boolean))];
+    const { data: profs } = profIds.length
+      ? await supabase.from('profesores').select('id, nombre').in('id', profIds)
+      : { data: [] };
+    const nombreProf = new Map((profs || []).map((p) => [p.id, p.nombre]));
+
+    // Presentes por clase y día
+    const presentes = new Map();
+    for (const a of asist) {
+      const k = `${a.fecha}|${a.materia_id}`;
+      if (!presentes.has(k)) presentes.set(k, new Set());
+      presentes.get(k).add(a.cedula);
+    }
+
+    // Más recientes primero, con enlaces temporales (1 hora) a las fotos
+    todas.sort((a, b) => b.fecha.localeCompare(a.fecha) || String(b.subido_en).localeCompare(String(a.subido_en)));
+    const evidencias = todas.slice(0, LIMITE);
+    let urls = [];
+    if (evidencias.length) {
+      const r = await supabase.storage.from(BUCKET_EVIDENCIAS).createSignedUrls(evidencias.map((e) => e.foto_path), 3600);
+      urls = r.data || [];
+    }
+
+    // Días con lista pero sin evidencia (hoy se excluye: todavía puede enviarla)
+    const conEvidencia = new Set(todas.map((e) => `${e.fecha}|${e.materia_id}`));
+    const sinEvidencia = [];
+    for (const [k, set] of presentes) {
+      const [fecha, materiaId] = k.split('|');
+      if (fecha >= hoy || conEvidencia.has(k)) continue;
+      sinEvidencia.push({
+        fecha, clase: nombreClase.get(materiaId) || '',
+        profesor: nombreProf.get(profDeClase.get(materiaId)) || '', presentes: set.size,
+      });
+    }
+    sinEvidencia.sort((a, b) => b.fecha.localeCompare(a.fecha));
+
+    res.json({
+      desde: inicio, hasta: fin, total: todas.length, truncado: todas.length > LIMITE,
+      totalAlumnos: totalAlumnos || 0,
+      evidencias: evidencias.map((e, i) => ({
+        id: e.id, fecha: e.fecha,
+        clase: nombreClase.get(e.materia_id) || '',
+        profesor: nombreProf.get(e.profesor_id) || '',
+        presentes: presentes.get(`${e.fecha}|${e.materia_id}`)?.size || 0,
+        capturado_en: e.capturado_en, subido_en: e.subido_en,
+        latitud: e.latitud, longitud: e.longitud, precision_m: e.precision_m,
+        url: urls[i]?.signedUrl || null,
+      })),
+      sinEvidencia: sinEvidencia.slice(0, 60),
+    });
+  } catch (e) {
+    console.error('❌ listarEvidenciasRango:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+};
+
 // ========== PANEL DE INICIO: indicadores de asistencia ==========
 async function traerTodo(construir) {
   const PAGINA = 1000;
@@ -1065,7 +1156,6 @@ const getPanelProfesor = async (req, res) => {
 
     const [estudiantes, filas] = await Promise.all([
       traerTodo(() => {
-        // ✅ FIX ARCHIVADOS: Se agregó .eq('archivado', false)
         let q = supabase.from('estudiantes').select('cedula, nombre, apellido, grado, seccion, carrera').eq('archivado', false).order('cedula');
         if (institucion_id) q = q.eq('institucion_id', institucion_id);
         return q;
@@ -1082,11 +1172,10 @@ const getPanelProfesor = async (req, res) => {
       if (!porGrupo.has(k)) porGrupo.set(k, []);
       porGrupo.get(k).push(e);
     }
-    
-    // ✅ FIX RURAL
+
     const rural = await institucionEsRural(institucion_id);
     const rosterDe = new Map(materias.map((m) => [m.id, rural ? estudiantes : (porGrupo.get(clave(m.grado, m.carrera)) || [])]));
-    
+
     const alumno = new Map(estudiantes.map((e) => [e.cedula, e]));
     const materiaPorId = new Map(materias.map((m) => [m.id, m]));
 
@@ -1199,5 +1288,5 @@ module.exports = {
   exportarReporteExcel, exportarReporteCompletoExcel, getReportesGenerados,
   getEstadisticas, exportarEstadisticasExcel, eliminarAsistencia,
   getPanelProfesor,
-  subirEvidencia, listarEvidencias
+  subirEvidencia, listarEvidencias, listarEvidenciasRango
 };
