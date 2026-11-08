@@ -67,18 +67,19 @@ app.use((req, res, next) => {
 
 // ============================================
 // SEGURIDAD: CORS estricto
-// Solo permite origenes conocidos — antes esta
-// funcion ignoraba por completo la lista blanca
-// y aceptaba CUALQUIER origen (bug critico).
+// Los origenes web se comparan de forma EXACTA (antes se usaba
+// startsWith, y un dominio como https://kairos-six-omega.vercel.app.sitio-malo.com
+// tambien habria pasado). Solo los esquemas de la app movil
+// (exp://, kairos://) se comparan por prefijo.
+// Si publicas la web en otro dominio, agregalo a origenesWeb.
 // ============================================
-const origenesPermitidos = [
+const origenesWeb = [
   'https://backend-asistencia-nhny.onrender.com',
-  'exp://',       // Expo Go
-  'kairos://',    // Deep link de la app
-  'http://localhost:5173',          // desarrollo web
-   'http://127.0.0.1:5173',
   'https://kairos-six-omega.vercel.app',
+  'http://localhost:5173',   // desarrollo web
+  'http://127.0.0.1:5173',
 ];
+const esquemasApp = ['exp://', 'kairos://']; // Expo Go y deep link de la app
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -87,14 +88,15 @@ app.use(cors({
     // ejecutando JS de un sitio de terceros.
     if (!origin) return callback(null, true);
 
-    const permitido = origenesPermitidos.some((o) => origin.startsWith(o));
+    const permitido = origenesWeb.includes(origin) || esquemasApp.some((e) => origin.startsWith(e));
     if (permitido) return callback(null, true);
 
     console.warn(`🚨 CORS bloqueado para origen no autorizado: ${origin}`);
     return callback(new Error('No permitido por CORS'));
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
+  // X-Institucion-Id: la usa el coordinador de red para indicar el colegio activo
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID', 'X-Institucion-Id'],
   exposedHeaders: ['X-Cache', 'X-Request-ID'],
   credentials: true,
   maxAge: 86400,
@@ -316,8 +318,7 @@ app.get('/api/health', (req, res) => {
 // RUTAS
 // ============================================
 const estudiantesRoutes            = require('./routes/estudiantes');
-// ✅ NUEVA RUTA: Importación de estudianteFotos
-const estudianteFotosRoutes        = require('./routes/estudianteFotos'); 
+const estudianteFotosRoutes        = require('./routes/estudianteFotos');
 const asistenciaRoutes             = require('./routes/asistencia');
 const adminRoutes                  = require('./routes/admin');
 const materiasRoutes               = require('./routes/materias');
@@ -327,7 +328,8 @@ const padresRoutes                 = require('./routes/padres');
 const excusasRoutes                = require('./routes/excusas');
 const profesorIndependienteRoutes  = require('./routes/profesorIndependiente');
 const masterAdminRoutes            = require('./routes/masterAdmin'); // panel del dueno de la app (distinto del admin institucional)
-const promocionRoutes              = require('./routes/promocion'); // ✅ NUEVA RUTA: Promociones
+const promocionRoutes              = require('./routes/promocion');   // cierre de año / archivo de estudiantes
+const redRoutes                    = require('./routes/red');         // redes de colegios (coordinador)
 
 let reportesPdfRoutes = null;
 try {
@@ -341,9 +343,9 @@ app.use('/api/auth-padre',    limitAuth,   authPadreRoutes);
 
 // Endpoints publicos
 app.use('/api/instituciones', limitPub,    institucionesRoutes);
+app.use('/api/red',           limitPub,    redRoutes);   // /codigo/:codigo es publica; /mi-red exige coordinador
 app.use('/api/estudiantes',   limitNormal, estudiantesRoutes);
-// ✅ NUEVA RUTA: Uso del endpoint estudiante-fotos
-app.use('/api/estudiante-fotos', limitNormal, estudianteFotosRoutes); 
+app.use('/api/estudiante-fotos', limitNormal, estudianteFotosRoutes);
 
 // Endpoints privados
 app.use('/api/asistencia',    limitNormal, asistenciaRoutes);
@@ -351,12 +353,10 @@ app.use('/api/admin',         limitNormal, adminRoutes); // admin institucional 
 app.use('/api/materias',      limitNormal, materiasRoutes);
 app.use('/api/padres',        limitNormal, padresRoutes);
 app.use('/api/excusas',       limitNormal, excusasRoutes);
+app.use('/api/promocion',     limitNormal, promocionRoutes);
 
 // Rutas del profesor independiente (registro con rate limit auth, resto normal)
 app.use('/api/profesor-independiente', limitNormal, profesorIndependienteRoutes);
-
-// ✅ NUEVA RUTA: Uso del endpoint promocion
-app.use('/api/promocion', limitNormal, promocionRoutes);
 
 // Panel del master admin (tu) — codigo secreto propio, prefijo separado.
 // Este endpoint deberia tener rate limit MAS estricto que el normal,
@@ -410,5 +410,5 @@ app.listen(PORT, () => {
   console.log(`\n🚀 Servidor en puerto ${PORT}`);
   console.log(`🔒 Modo: ${process.env.NODE_ENV || 'development'}`);
   console.log(`📋 Rutas: estudiantes | asistencia | admin | materias`);
-  console.log(`         instituciones | auth-padre | padres | excusas | profesor-independiente | master-admin | promocion\n`);
+  console.log(`         instituciones | red | auth-padre | padres | excusas | profesor-independiente | master-admin | promocion\n`);
 });
