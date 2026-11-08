@@ -12,6 +12,9 @@ const upload = multer({
 
 router.use(verificarProfesor);
 
+// ✅ NUEVA RUTA: Ruta del Panel (Dashboard) que faltaba
+router.get('/panel',                      asistenciaController.getPanelProfesor);
+
 // --- Rutas de Asistencia Básicas ---
 router.post('/',                          asistenciaController.registrarAsistencia);
 router.post('/finalizar-clase',           asistenciaController.finalizarClase);
@@ -32,8 +35,6 @@ router.post('/evidencia', (req, res, next) => {
 router.get('/evidencia/:materiaId',       asistenciaController.listarEvidencias);
 
 // --- Rutas de Consulta y Reportes ---
-router.get('/panel',                      asistenciaController.getPanelProfesor); // ✅ NUEVA RUTA AGREGADA
-
 router.get('/hoy',                        asistenciaController.getAsistenciaHoy);
 router.delete('/hoy',                     asistenciaController.limpiarAsistenciaHoy); 
 router.delete('/:id',                     asistenciaController.eliminarAsistencia);   
@@ -47,6 +48,5 @@ router.get('/reporte-completo-excel',     asistenciaController.exportarReporteCo
 router.get('/estadisticas',               asistenciaController.getEstadisticas);
 router.get('/roster/:materiaId',          asistenciaController.getRosterPorMateria);
 router.get('/estadisticas/excel',         asistenciaController.exportarEstadisticasExcel);
-router.get('/evidencias', asistenciaController.listarEvidenciasRango);
 
 module.exports = router;
