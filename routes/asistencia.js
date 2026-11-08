@@ -1,26 +1,23 @@
 const express = require('express');
 const router  = express.Router();
-const multer  = require('multer'); 
+const multer  = require('multer');
 const { verificarProfesor } = require('../middleware/auth');
 const asistenciaController  = require('../controllers/asistenciaController');
 
-// Configuración de Multer para subir evidencias en memoria
-const upload = multer({ 
-  storage: multer.memoryStorage(), 
-  limits: { fileSize: 4 * 1024 * 1024, files: 1 } 
+// Multer para subir evidencias en memoria
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 4 * 1024 * 1024, files: 1 }
 });
 
 router.use(verificarProfesor);
 
-// ✅ NUEVA RUTA: Ruta del Panel (Dashboard) que faltaba
-router.get('/panel',                      asistenciaController.getPanelProfesor);
-
-// --- Rutas de Asistencia Básicas ---
+// --- Asistencia básica ---
 router.post('/',                          asistenciaController.registrarAsistencia);
 router.post('/finalizar-clase',           asistenciaController.finalizarClase);
 router.post('/sync-batch',                asistenciaController.sincronizarAsistenciaBatch);
 
-// --- Rutas de Evidencias (Nuevas) ---
+// --- Evidencias ---
 router.post('/evidencia', (req, res, next) => {
   upload.single('foto')(req, res, (err) => {
     if (err) {
@@ -31,13 +28,16 @@ router.post('/evidencia', (req, res, next) => {
     next();
   });
 }, asistenciaController.subirEvidencia);
-
 router.get('/evidencia/:materiaId',       asistenciaController.listarEvidencias);
+router.get('/evidencias',                 asistenciaController.listarEvidenciasRango); // panel de colegios rurales
 
-// --- Rutas de Consulta y Reportes ---
+// --- Panel de inicio ---
+router.get('/panel',                      asistenciaController.getPanelProfesor);
+
+// --- Consulta y reportes ---
 router.get('/hoy',                        asistenciaController.getAsistenciaHoy);
-router.delete('/hoy',                     asistenciaController.limpiarAsistenciaHoy); 
-router.delete('/:id',                     asistenciaController.eliminarAsistencia);   
+router.delete('/hoy',                     asistenciaController.limpiarAsistenciaHoy);
+router.delete('/:id',                     asistenciaController.eliminarAsistencia); // debe ir después de /hoy
 
 router.get('/fecha/:fecha',               asistenciaController.getAsistenciaByFecha);
 router.get('/reporte/grado',              asistenciaController.getAsistenciaPorGrado);
