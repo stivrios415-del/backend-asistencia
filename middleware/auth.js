@@ -18,13 +18,16 @@ setInterval(() => {
 
 // ============================================
 // COORDINADOR / COLEGIO ELEGIDO
+// Un coordinador de red actua como ADMIN del colegio indicado en el
+// header X-Institucion-Id (solo si ese colegio pertenece a su red).
+// Sin ese header solo puede usar las rutas /api/red.
 // ============================================
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const cacheColegios = new Map(); 
+const cacheColegios = new Map(); // `${red_id}|${institucion_id}` -> vence
 
 async function aplicarColegioElegido(req, userData) {
   if (userData.rol !== 'coordinador') return { user: userData };
-  
+
   const elegido = String(req.headers['x-institucion-id'] || '').trim();
   if (!elegido) return { user: userData };
   if (!UUID_RE.test(elegido)) return { error: { status: 400, mensaje: 'Colegio inválido' } };
@@ -126,14 +129,18 @@ const verificarAdmin = (req, res, next) => {
 
 // ============================================
 // VERIFICAR PROFESOR
+// El coordinador NO se acepta aqui: sin un colegio elegido su institucion_id
+// es null y muchos controladores solo filtran "if (institucion_id)", asi que
+// tocarian datos de TODOS los colegios. Cuando elige colegio, ya llega como
+// 'admin' de ese colegio (ver aplicarColegioElegido) y pasa sin problema.
 // ============================================
 const verificarProfesor = [
   verificarToken,
   (req, res, next) => {
-    // ✅ FIX: Se agregó 'coordinador' para que no bloquee el acceso al panel
-    const rolesPermitidos = ['profesor', 'admin', 'coordinador'];
-    
-    if (!rolesPermitidos.includes(req.user?.rol)) {
+    if (req.user?.rol === 'coordinador') {
+      return res.status(403).json({ error: 'Elige un colegio antes de continuar.' });
+    }
+    if (!['profesor', 'admin'].includes(req.user?.rol)) {
       console.warn(`🚨 Acceso denegado profesor — usuario: ${req.user?.email} rol: ${req.user?.rol}`);
       return res.status(403).json({ error: 'Acceso denegado. Se requieren permisos de profesor.' });
     }
@@ -199,12 +206,12 @@ const invalidarTokenCache = (token) => {
 };
 
 module.exports = {
-  verificarToken, 
-  verificarAdmin, 
-  verificarProfesor, 
+  verificarToken,
+  verificarAdmin,
+  verificarProfesor,
   verificarPadre,
-  verificarInstitucion, 
-  verificarRol, 
+  verificarInstitucion,
+  verificarRol,
   verificarCoordinador,
   invalidarTokenCache,
 };
